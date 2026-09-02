@@ -36,8 +36,8 @@ jobs:
           node-version: "20"
           registry-url: "https://registry.npmjs.org"
 
-      - name: Upgrade npm (OIDC trusted publishing needs npm >= 11.5.1)
-        run: npm install -g npm@latest
+      - name: Upgrade npm to 11.x (OIDC trusted publishing needs >= 11.5.1; npm 12 requires Node 22+, runner is Node 20)
+        run: npm install -g npm@11
 
       - name: Install (clean, lockfile-pinned)
         run: npm ci
