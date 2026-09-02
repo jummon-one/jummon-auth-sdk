@@ -59,14 +59,7 @@ jobs:
           fi
           echo "publishing @jummon/auth@$pkg"
 
-      - name: Diagnose OIDC availability (temporary)
-        run: |
-          echo "npm: $(npm --version)  node: $(node --version)"
-          echo "OIDC id-token endpoint present: ${ACTIONS_ID_TOKEN_REQUEST_URL:+YES}"
-          echo "repo: ${GITHUB_REPOSITORY}  ref: ${GITHUB_REF}  workflow file: ${GITHUB_WORKFLOW_REF}"
-
       - name: Publish to npm (trusted publishing + provenance)
-        run: npm publish --provenance --access public --loglevel verbose
+        run: npm publish --provenance --access public
         # No NODE_AUTH_TOKEN — auth comes from the OIDC id-token via the configured
-        # Trusted Publisher. The verbose log surfaces the exact OIDC exchange result
-        # (temporary — trim once tokenless publishing is confirmed working).
+        # Trusted Publisher (owner jummon-one, repo jummon-auth-sdk, workflow publish.yml).
