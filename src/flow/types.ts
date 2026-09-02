@@ -25,6 +25,19 @@
 
 import type { ErrorClass } from "../errors";
 
+/**
+ * Every field here is already the RESOLVED value — the backend merges a
+ * per-CLIENT branding override on top of the tenant's own theme
+ * (`initiatives/headless-embeddable-auth/design/per-client-whitelabel.md`
+ * §3.1: `authentication_step_resolver.go`'s `ApplyClientThemeOverride`,
+ * applied at the same `/auth/steps` emission site this SDK's `theme` field
+ * already reads). A client with no override renders byte-for-byte the same
+ * as today's tenant-only theme; a client with a partial override (e.g. only
+ * `logo`/`client_name`) still inherits the tenant's colors/links
+ * field-by-field. The SDK does no merging itself — `HeadlessAuthFlowImpl`
+ * just surfaces whatever this object already resolved to, same as
+ * `available_social_logins`/`passwordless_available`/`passkey_origin_ok`.
+ */
 export interface HeadlessThemeConfig {
   logo?: string;
   background_color?: string;

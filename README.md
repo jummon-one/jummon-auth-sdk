@@ -222,6 +222,13 @@ const unsubscribe = flow.onStateChange((snapshot) => {
 });
 
 await flow.start(); // mints the flow + returns branding tokens (snapshot.theme)
+// snapshot.theme, snapshot.availableSocialLogins and
+// snapshot.passwordlessAvailable are already fully resolved server-side —
+// if the tenant has configured a PER-CLIENT branding/social override for
+// this app ("white-label per app, tenant fallback"), you get the merged
+// result automatically; a client with no override renders the tenant's own
+// theme unchanged. There is nothing else to call — the SDK never merges
+// these itself.
 
 // user submits your own form:
 await flow.submitPassword(email, password);
