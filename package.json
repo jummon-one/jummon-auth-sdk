@@ -1,6 +1,6 @@
 {
   "name": "@jummon/auth",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Official Jummon browser auth SDK for customer apps: OIDC authorization-code + PKCE (redirect flow), silent refresh, and a thin React binding.",
   "license": "MIT",
   "author": "Jummon",
