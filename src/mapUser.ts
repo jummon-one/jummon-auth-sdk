@@ -14,7 +14,22 @@ import type { JummonUser } from "./types";
 export function mapOidcUser(oidcUser: OidcUser, tenant: string): JummonUser {
   const idClaims = (oidcUser.profile ?? {}) as Record<string, unknown>;
   const accessClaims = decodeJwtPayload(oidcUser.access_token) ?? {};
+  return buildJummonUser(idClaims, accessClaims, tenant);
+}
 
+/**
+ * Shared claim-merge logic behind every `JummonUser` this SDK produces,
+ * regardless of which `AuthEngine` produced the underlying tokens —
+ * `RedirectEngine` (via `mapOidcUser` above) and `HeadlessEngine` (direct
+ * token exchange, `../internal/tokenExchange.ts`) both call this so the two
+ * engines yield byte-identical `JummonUser` shapes
+ * (`implementation-plan.md` §8 item 4).
+ */
+export function buildJummonUser(
+  idClaims: Record<string, unknown>,
+  accessClaims: Record<string, unknown>,
+  tenant: string,
+): JummonUser {
   return {
     sub: String(idClaims.sub ?? ""),
     email: asOptionalString(idClaims.email),

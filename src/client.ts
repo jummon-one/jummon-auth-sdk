@@ -1,5 +1,7 @@
+import { HeadlessEngine } from "./engines/headlessEngine";
 import { RedirectEngine } from "./engines/redirectEngine";
 import { JummonAuthError } from "./errors";
+import { createHeadlessAuthFlow, type HeadlessAuthFlow } from "./flow/headlessAuthFlow";
 import type {
   AuthEngine,
   AuthState,
@@ -12,13 +14,13 @@ import type {
 /**
  * The stable public client. Every method here delegates to the current
  * AuthEngine — this shape is what stays identical across v1 (redirect) and
- * the future v2 (headless) engine; only `createJummonAuth()`'s internal
- * engine selection changes.
+ * v2 (headless); only `createJummonAuth()`'s internal engine selection
+ * changes.
  */
 export interface JummonAuthClient {
-  /** v1: full-page redirect to the hosted login. Resolves once the browser navigates away. */
+  /** v1 (redirect mode): full-page redirect to the hosted login. Resolves once the browser navigates away. Throws `headless_requires_flow` in headless mode — use `startAuthFlow()` instead. */
   signIn(opts?: SignInOptions): Promise<void>;
-  /** Call on the page `redirectUri` points at; exchanges the authorization code for tokens. */
+  /** Call on the page `redirectUri` points at; exchanges the authorization code for tokens. Not used in headless mode. */
   signInCallback(url?: string): Promise<JummonUser>;
   signOut(opts?: SignOutOptions): Promise<void>;
   getUser(): Promise<JummonUser | null>;
@@ -29,10 +31,39 @@ export interface JummonAuthClient {
   dispose(): void;
 }
 
-export function createJummonAuth(options: JummonAuthOptions): JummonAuthClient {
-  validateOptions(options);
-  const engine = createEngine(options);
+/**
+ * Returned by `createJummonAuth({ ...options, mode: "headless" })` — the
+ * same 8-method surface plus `startAuthFlow()`, the multi-step entrypoint
+ * for an in-app password/passkey/social login (`system-design.md` §6,
+ * `implementation-plan.md` §8).
+ */
+export interface HeadlessJummonAuthClient extends JummonAuthClient {
+  /** Starts a new in-app login flow. See `HeadlessAuthFlow` (`./flow/headlessAuthFlow.ts`). */
+  startAuthFlow(): HeadlessAuthFlow;
+}
 
+export function createJummonAuth(options: JummonAuthOptions & { mode: "headless" }): HeadlessJummonAuthClient;
+export function createJummonAuth(options: JummonAuthOptions & { mode?: "redirect" }): JummonAuthClient;
+// Fallback overload for callers holding a `JummonAuthOptions` whose `mode`
+// isn't narrowed to a literal at the call site (e.g. `JummonAuthProvider`,
+// which forwards arbitrary props) — resolves to the base 8-method surface;
+// callers wanting `startAuthFlow()` must pass a literal `mode: "headless"`.
+export function createJummonAuth(options: JummonAuthOptions): JummonAuthClient;
+export function createJummonAuth(options: JummonAuthOptions): JummonAuthClient | HeadlessJummonAuthClient {
+  validateOptions(options);
+
+  if ((options.mode ?? "redirect") === "headless") {
+    const engine = new HeadlessEngine(options);
+    return {
+      ...buildClient(engine),
+      startAuthFlow: () => createHeadlessAuthFlow(options, engine),
+    };
+  }
+
+  return buildClient(new RedirectEngine(options));
+}
+
+function buildClient(engine: AuthEngine): JummonAuthClient {
   return {
     signIn: (opts) => engine.signIn(opts),
     signInCallback: (url) => engine.signInCallback(url),
@@ -43,18 +74,6 @@ export function createJummonAuth(options: JummonAuthOptions): JummonAuthClient {
     onAuthStateChanged: (cb) => engine.onAuthStateChanged(cb),
     dispose: () => engine.dispose(),
   };
-}
-
-function createEngine(options: JummonAuthOptions): AuthEngine {
-  const mode = options.mode ?? "redirect";
-  if (mode === "headless") {
-    throw new JummonAuthError(
-      "engine_not_implemented",
-      '"headless" mode is reserved for a future @jummon/auth release (see ROADMAP.md and ' +
-        "engineering-team/initiatives/headless-embeddable-auth). v1 supports mode: \"redirect\" only.",
-    );
-  }
-  return new RedirectEngine(options);
 }
 
 function validateOptions(options: JummonAuthOptions): void {

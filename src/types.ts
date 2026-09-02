@@ -2,14 +2,15 @@
  * Public, stable types for @jummon/auth.
  *
  * These types are the contract consumers (and the React binding) code
- * against. `AuthEngine` is the extension point: v1 ships `RedirectEngine`
- * (full-page authorization-code + PKCE redirect via oidc-client-ts); a
- * future `HeadlessEngine` (in-app password form, passkey, social via
- * system-browser redirect — see ../ROADMAP.md) implements the same
- * interface so consumer code never changes.
+ * against. `AuthEngine` is the extension point: `RedirectEngine` (full-page
+ * authorization-code + PKCE redirect via oidc-client-ts) and
+ * `HeadlessEngine` (in-app password form, passkey, social via
+ * system-browser redirect — see ../ROADMAP.md and `./client.ts`'s
+ * `HeadlessJummonAuthClient`) both implement it, so the 8-method surface
+ * never changes between modes.
  */
 
-/** Engine implementation selector. Only 'redirect' ships in v1. */
+/** Engine implementation selector — see `JummonAuthOptions.mode`. */
 export type JummonAuthMode = "redirect" | "headless";
 
 export interface JummonAuthOptions {
@@ -43,9 +44,12 @@ export interface JummonAuthOptions {
    */
   issuerHost?: string;
   /**
-   * Engine selector. Reserved for the v2 headless engine — only "redirect"
-   * (the default) is implemented today. Passing "headless" throws
-   * JummonAuthError("engine_not_implemented").
+   * Engine selector. `"redirect"` (default): full-page redirect to the
+   * hosted login. `"headless"`: in-app password/passkey/social login via
+   * `createJummonAuth({ ...options, mode: "headless" }).startAuthFlow()` —
+   * see `./flow/headlessAuthFlow.ts` and `system-design.md` §6. In headless
+   * mode, `signIn()`/`signInCallback()` throw `headless_requires_flow`;
+   * `startAuthFlow()` is the real entrypoint.
    */
   mode?: JummonAuthMode;
   /**

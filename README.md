@@ -4,16 +4,19 @@ Official Jummon browser auth SDK for customer apps. Wraps the standard
 OIDC **authorization-code + PKCE redirect flow** against your tenant's
 Jummon IdP, with silent (refresh_token) renewal and a thin React binding.
 
-- **v1 (this package): hosted redirect.** The browser navigates to Jummon's
-  hosted login (`idm.jummon.com/<tenant>/oidc/...`), then back to your app.
-  Full-page redirect — no popups, works everywhere popups don't (mobile
-  Safari, in-app WebViews, PWAs).
-- The public API (`createJummonAuth`, `signIn`, `signInCallback`, `signOut`,
-  `getUser`, `getAccessToken`, `onAuthStateChanged`, `isAuthenticated`) is
-  designed to stay identical once a v2 headless engine (in-app password
-  form, passkey, social-via-system-browser) ships — see
-  [`ROADMAP.md`](./ROADMAP.md). Integrate against this API now; you will
-  not need to rewrite your integration to adopt v2.
+- **`mode: "redirect"` (default): hosted redirect.** The browser navigates
+  to Jummon's hosted login (`idm.jummon.com/<tenant>/oidc/...`), then back
+  to your app. Full-page redirect — no popups, works everywhere popups
+  don't (mobile Safari, in-app WebViews, PWAs).
+- **`mode: "headless"` (dev-ready, PWA/web — Wave 1): in-app login.** Your
+  own app renders the login form (email+password, passkey, social) while
+  Jummon stays the OIDC IdP underneath — see
+  [Headless / embeddable mode](#headless--embeddable-mode-mode-headless)
+  below and [`ROADMAP.md`](./ROADMAP.md).
+- The base 8-method public API (`createJummonAuth`, `signIn`,
+  `signInCallback`, `signOut`, `getUser`, `getAccessToken`,
+  `onAuthStateChanged`, `isAuthenticated`) is identical across both modes —
+  switching later is a `mode` option change, not a rewrite.
 
 If you're migrating off `oidc-client-ts`'s `signinPopup()`, read
 [`MIGRATION-from-popup.md`](./MIGRATION-from-popup.md) first — it's a
@@ -181,6 +184,72 @@ const unsubscribe = auth.onAuthStateChanged((state) => {
 });
 ```
 
+## Headless / embeddable mode (`mode: "headless"`)
+
+**Status: SDK-side code is dev-ready; the backend Auth API it talks to
+(`jummon-login-interface`'s `/api/v1/auth/*` namespace) is a separate,
+not-yet-shipped dispatch — see
+`engineering-team/initiatives/headless-embeddable-auth/`. Do not point this
+at a tenant in production until that route exists and the tenant has
+`headless_embeddable_auth` enabled.**
+
+Your app renders its own sign-in form — email+password, passkey (WebAuthn),
+and social (redirect-to-provider) — instead of navigating to Jummon's
+hosted page. **This is not Resource Owner Password Credentials (ROPC):**
+`submitPassword()` never talks to the OIDC token endpoint directly; it goes
+through a stateful step machine that is the *same* rate-limited,
+risk-detected, audited code path the hosted login uses
+(`ADR-0001-headless-auth-api-not-ropc.md`).
+
+```ts
+import { createJummonAuth } from "@jummon/auth";
+
+const auth = createJummonAuth({
+  tenant: "acme",
+  clientId: "acme-app",
+  redirectUri: "https://app.acme.com/callback",
+  mode: "headless",
+});
+
+const flow = auth.startAuthFlow();
+
+const unsubscribe = flow.onStateChange((snapshot) => {
+  // snapshot.status: "idle" | "loading" | "needs_credentials" |
+  //   "needs_passkey_options" | "needs_passkey_assertion" | "needs_mfa" |
+  //   "needs_mfa_configure" | "needs_social_redirect" |
+  //   "needs_required_action" | "authenticated" | "error"
+  renderYourOwnUiFor(snapshot);
+});
+
+await flow.start(); // mints the flow + returns branding tokens (snapshot.theme)
+
+// user submits your own form:
+await flow.submitPassword(email, password);
+
+// passkey (only offer the button when snapshot.passkeyOriginOk === true):
+await flow.startPasskeyLogin(email); // resolves navigator.credentials.get() internally
+
+// social (full-page redirect to the provider, never an iframe):
+await flow.startSocialLogin("google");
+
+// MFA / any required-action step:
+await flow.submitMfaCode(code);
+await flow.submitRequiredAction("terms-agreement", { accepted: true });
+
+// once snapshot.status === "authenticated", auth.getUser()/getAccessToken()
+// behave exactly as they do in redirect mode — this SDK already exchanged
+// the code for tokens for you.
+```
+
+`auth.signIn()` / `auth.signInCallback()` both throw
+`headless_requires_flow` in this mode — `startAuthFlow()` is the real
+entrypoint, because a single call can't express a multi-step login.
+
+Full state/method reference:
+`engineering-team/initiatives/headless-embeddable-auth/design/system-design.md`
+§3.1/§6 and `design/ux-spec-wave1.md` (reference-screen contract, copy
+deck, error/microcopy table, passkey-affordance visibility rules).
+
 ## API
 
 | Function | Notes |
@@ -220,6 +289,15 @@ switch on `code`, never on `.message` (free to change). Common codes:
 `consent_required`, `invalid_redirect_uri`, `state_mismatch`,
 `silent_renew_failed`, `callback_missing_params`, `ssr_unsupported`,
 `invalid_options`.
+
+Headless-mode-specific codes (`HeadlessAuthFlow` snapshots also carry these
+on `snapshot.error`, so you rarely need a `try/catch` around every call):
+`headless_requires_flow`, `flow_not_started`, `flow_expired`,
+`invalid_credentials` (deliberately the *same* code for "wrong password"
+and "no such user" — never distinguish these in your own UI either, it's
+an enumeration leak), `invalid_mfa_code`, `rate_limited`, `passkey_failed`,
+`passkey_origin_unsupported`, `social_login_failed`,
+`cors_origin_rejected`, `network_unreachable`.
 
 `invalid_redirect_uri` is special: if the auth-engine cannot recognize your
 `redirect_uri` at all, it often cannot redirect the browser *back* to you

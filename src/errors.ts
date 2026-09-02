@@ -20,6 +20,19 @@ export type JummonAuthErrorCode =
   | "signin_failed"
   | "signout_failed"
   | "engine_not_implemented"
+  | "network_unreachable"
+  // Headless mode (`mode: "headless"`, `HeadlessAuthFlow` — see
+  // ../ROADMAP.md and engineering-team/initiatives/headless-embeddable-auth).
+  | "headless_requires_flow"
+  | "flow_not_started"
+  | "flow_expired"
+  | "invalid_credentials"
+  | "invalid_mfa_code"
+  | "rate_limited"
+  | "passkey_failed"
+  | "passkey_origin_unsupported"
+  | "social_login_failed"
+  | "cors_origin_rejected"
   | "unknown";
 
 export class JummonAuthError extends Error {
@@ -76,4 +89,43 @@ export function toJummonAuthError(err: unknown): JummonAuthError {
   const message =
     asRecord?.message ?? (err instanceof Error ? err.message : "Unknown authentication error.");
   return new JummonAuthError("unknown", message, err);
+}
+
+/**
+ * Maps the headless Auth API's public `{error.code}` (`jummon-auth-engine/
+ * internal/apierror/codes.go`) to a stable SDK `JummonAuthErrorCode`.
+ * Grounded in `design/ux-spec-wave1.md` §3's error/microcopy library.
+ *
+ * `INVALID_CREDENTIALS` (AUTH-AUTHN-2001) and `USER_NOT_FOUND`
+ * (AUTH-AUTHN-2004) are deliberately collapsed to the same
+ * `invalid_credentials` code — they are distinct public codes on the wire
+ * today, and forwarding either verbatim is a username-enumeration leak
+ * (security review MUST-FIX, `security-note.md` §3). The Auth API route is
+ * expected to collapse these before they reach the wire too; this mapping
+ * is defense-in-depth on the SDK side, not a substitute for that fix.
+ */
+const HEADLESS_PUBLIC_CODE_MAP: Record<string, JummonAuthErrorCode> = {
+  "AUTH-AUTHN-2001": "invalid_credentials",
+  "AUTH-AUTHN-2004": "invalid_credentials",
+  "AUTH-AUTHN-2003": "invalid_mfa_code",
+  "AUTH-LIM-5001": "rate_limited",
+  "AUTH-EXP-4001": "flow_expired",
+  "AUTH-EXP-4002": "flow_expired",
+  "AUTH-EXP-4003": "flow_expired",
+  "AUTH-AUTHN-2010": "passkey_failed",
+  "AUTH-AUTHN-2011": "passkey_failed",
+  "AUTH-AUTHN-2012": "passkey_failed",
+  "AUTH-AUTHN-2216": "passkey_failed",
+  "AUTH-AUTHN-2217": "passkey_failed",
+  "AUTH-AUTHN-2300": "social_login_failed",
+  "AUTH-AUTHN-2301": "social_login_failed",
+  "AUTH-AUTHN-2303": "social_login_failed",
+  "AUTH-AUTHN-2304": "social_login_failed",
+};
+
+export function mapHeadlessErrorCode(publicCode: string | null | undefined): JummonAuthErrorCode {
+  if (!publicCode) {
+    return "unknown";
+  }
+  return HEADLESS_PUBLIC_CODE_MAP[publicCode] ?? "unknown";
 }

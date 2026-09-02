@@ -1,6 +1,8 @@
 import { UserManager, WebStorageStateStore, type User, type UserManagerSettings } from "oidc-client-ts";
 import { buildAuthority } from "../discovery";
 import { JummonAuthError, toJummonAuthError } from "../errors";
+import { AuthStateEmitter } from "../internal/authStateEmitter";
+import { resolveStorage } from "../internal/storage";
 import { mapOidcUser } from "../mapUser";
 import type {
   AuthEngine,
@@ -25,7 +27,7 @@ export class RedirectEngine implements AuthEngine {
   private readonly userManager: UserManager;
   private readonly tenant: string;
   private readonly postLogoutRedirectUri: string;
-  private readonly listeners = new Set<(state: AuthState) => void>();
+  private readonly emitter = new AuthStateEmitter();
   private readonly unsubscribeHandlers: Array<() => void> = [];
 
   constructor(options: JummonAuthOptions) {
@@ -156,72 +158,22 @@ export class RedirectEngine implements AuthEngine {
   }
 
   onAuthStateChanged(cb: (state: AuthState) => void): () => void {
-    this.listeners.add(cb);
+    const unsubscribe = this.emitter.subscribe(cb);
     void this.getUser().then((user) => {
       cb(user ? { status: "authenticated", user } : { status: "unauthenticated" });
     });
-    return () => {
-      this.listeners.delete(cb);
-    };
+    return unsubscribe;
   }
 
   dispose(): void {
     for (const unsubscribe of this.unsubscribeHandlers) {
       unsubscribe();
     }
-    this.listeners.clear();
+    this.emitter.clear();
     this.userManager.stopSilentRenew();
   }
 
   private emit(state: AuthState): void {
-    for (const listener of this.listeners) {
-      listener(state);
-    }
-  }
-}
-
-function resolveStorage(kind: JummonAuthOptions["tokenStorage"]): Storage {
-  if (kind === "local") {
-    return window.localStorage;
-  }
-  if (kind === "memory") {
-    return new MemoryStorage();
-  }
-  return window.sessionStorage;
-}
-
-/**
- * In-memory Storage shim for `tokenStorage: "memory"`. Trades "survives a
- * full-page reload" for "nothing to steal via XSS reading storage" — see
- * README "Security / token storage" for when to pick this over the
- * session-storage default (which oidc-client-ts itself defaults to, and
- * which every redirect-flow SPA SDK relies on to survive the navigation
- * away from and back to the app during signInCallback()).
- */
-class MemoryStorage implements Storage {
-  private readonly data = new Map<string, string>();
-
-  get length(): number {
-    return this.data.size;
-  }
-
-  clear(): void {
-    this.data.clear();
-  }
-
-  getItem(key: string): string | null {
-    return this.data.has(key) ? (this.data.get(key) as string) : null;
-  }
-
-  key(index: number): string | null {
-    return Array.from(this.data.keys())[index] ?? null;
-  }
-
-  removeItem(key: string): void {
-    this.data.delete(key);
-  }
-
-  setItem(key: string, value: string): void {
-    this.data.set(key, value);
+    this.emitter.emit(state);
   }
 }

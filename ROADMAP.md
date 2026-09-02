@@ -14,26 +14,55 @@ deliberately the full surface v2 needs too — internally it's implemented
 against an `AuthEngine` interface (`src/types.ts`), with `RedirectEngine`
 (`src/engines/redirectEngine.ts`) as the only concrete engine today.
 
-## v2 — headless / embeddable auth (planned, not started)
+## v2 — headless / embeddable auth
 
 Tracked by the **`headless-embeddable-auth`** initiative:
-`engineering-team/initiatives/headless-embeddable-auth/README.md` (status:
-proposed / request-for-analysis as of this writing — system design and ADR
-are not written yet; read that folder before starting v2 work, not this
-file, for the authoritative scope and boundaries).
+`engineering-team/initiatives/headless-embeddable-auth/README.md`.
 
-Planned shape, per that initiative's three waves:
+**Wave 1 (PWA/web) — SDK-side code is dev-ready.** `HeadlessEngine`
+(`src/engines/headlessEngine.ts`) and `HeadlessAuthFlow`
+(`src/flow/headlessAuthFlow.ts`, `src/flow/transport.ts`,
+`src/flow/webauthn.ts`, `src/flow/types.ts`) ship in this package. The
+backend Auth API this SDK talks to (`jummon-login-interface`'s
+`POST /api/v1/auth/:tenant/:clientId/{start,submit}` /
+`GET .../poll`) is a **separate, not-yet-shipped dispatch** —
+`implementation-plan.md` §7. **`src/flow/types.ts`'s `HeadlessAuthEnvelope`
+is this SDK's own resolution of the wire contract** `system-design.md` §3.3
+and `implementation-plan.md` §11 open question 5 explicitly left unfrozen
+(most notably: `tenant`/`client_id` as URL path segments, never a JSON body
+field, and separate `code`/`oidc_state` fields on the terminal envelope
+instead of the plan's own ambiguous `{state: "authenticated", ..., state}`
+example) — align the backend route to that file before wiring this SDK
+against a live tenant, don't silently reconcile against a drifted route.
+Do not point `mode: "headless"` at a production tenant until (a) that
+route ships and (b) the tenant has `headless_embeddable_auth` enabled
+(feature flag, default OFF — `tenant-management-api`).
 
-- **Wave 1 (PWA/web):** email+password rendered **in-app** (no redirect, no
-  popup), browser WebAuthn passkey **in-app**, social login still
-  redirected — but to the social provider directly, not to
-  `jummon-login-interface`. Backed by a new public **headless Auth API**
-  (a state machine) that is a second client of the *same* step contract
-  `jummon-login-interface` already consumes (`dynamic-flows` handlers +
-  steptype registry / the auth-engine's classic step engine) — not a
-  reimplementation of password checking, lockout, FIDO ceremonies, or risk
-  scoring. This SDK's `HeadlessEngine` would call that Auth API instead of
-  redirecting.
+Shape shipped in this SDK:
+
+- Email+password rendered **in-app** (`HeadlessAuthFlow.submitPassword` —
+  **not** ROPC; it drives a multi-step state machine over the Auth API,
+  never a direct call to `/oauth/token` with a raw password — see
+  `ADR-0001-headless-auth-api-not-ropc.md`).
+- Browser WebAuthn passkey **in-app** (`startPasskeyLogin`/
+  `registerPasskey`; `src/flow/webauthn.ts` wraps
+  `navigator.credentials.get`/`.create` directly, same two-phase wire
+  contract `jummon-login-interface/src/pages/login/index.tsx` already
+  implements against auth-engine's go-webauthn server). The passkey
+  affordance is gated on `snapshot.passkeyOriginOk === true` — never offer
+  a button that will always fail.
+- Social login still redirected — but to the social provider directly
+  (`startSocialLogin`, full-page `window.location.assign`, never an
+  iframe/WebView), not to `jummon-login-interface`.
+- PKCE stays SDK-side (`oidc-client-ts`'s `SigninState.create`, never
+  server-brokered). On the terminal `authenticated` state, this SDK
+  exchanges `{code}` for tokens itself against
+  `/<tenant>/oidc/oauth/token` (`src/internal/tokenExchange.ts`) — the same
+  operation `RedirectEngine.signInCallback` performs via `oidc-client-ts`,
+  just invoked directly since `HeadlessEngine` never navigates the browser.
+  `HeadlessEngine` and `RedirectEngine` converge on identical
+  `JummonUser`/`AuthState` output from there (`src/mapUser.ts`'s shared
+  `buildJummonUser`).
 - **Wave 2 (true-native):** iOS/Android platform passkey APIs
   (`ASAuthorizationPlatformPublicKeyCredentialProvider` / Android
   `CredentialManager`), associated-domain verification (AASA /
@@ -47,10 +76,8 @@ Planned shape, per that initiative's three waves:
 
 ### Why the API is stable across this boundary
 
-`createJummonAuth({ ...options, mode: "headless" })` is already reserved in
-`JummonAuthOptions.mode` (currently throws `engine_not_implemented` — see
-`src/client.ts`). When `HeadlessEngine` ships, it implements the same
-`AuthEngine` interface `RedirectEngine` does today:
+`HeadlessEngine implements AuthEngine` — the same interface `RedirectEngine`
+does:
 
 ```ts
 interface AuthEngine {
@@ -66,18 +93,20 @@ interface AuthEngine {
 ```
 
 A consumer who integrated against `createJummonAuth()` / `useJummonAuth()`
-for v1 does not need to change their code to adopt v2 — only the
-`mode` option (and, for the in-app password/passkey UI, new
-consumer-rendered form components calling `signIn({ credentials })` or
-similar, to be specced alongside the headless Auth API's actual request
-shape once `system-design.md` exists in the initiative).
+for v1 does not need to change their code to adopt headless mode's `getUser`/
+`getAccessToken`/`onAuthStateChanged`/`signOut`/`isAuthenticated`/`dispose` —
+only `mode: "headless"` plus the new `startAuthFlow()` entrypoint for the
+actual multi-step login (`signIn()`/`signInCallback()` throw
+`headless_requires_flow` in this mode; a single call can't express
+`submitPassword` → maybe `needs_mfa` → `submitMfaCode` → `authenticated`).
 
 ### Explicitly not planned
 
 - No Resource Owner Password Credentials (ROPC) grant against the OIDC
   token endpoint — rejected in the initiative's ADR-0001. The in-app
-  password form talks to the headless Auth API's step contract, not
-  directly to `/oauth/token` with a raw password.
+  password form (`HeadlessAuthFlow.submitPassword`) talks to the headless
+  Auth API's step contract, not directly to `/oauth/token` with a raw
+  password.
 - No new credential storage — passwords/FIDO credentials/OTP secrets stay
   exactly where they live today (`jummon-auth-engine` /
   `jummon-user-management`).
