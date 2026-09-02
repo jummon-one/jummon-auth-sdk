@@ -1,0 +1,36 @@
+# Private "artifactory" alternative to public npm.
+#
+# package.json's `publishConfig` currently points at public npm
+# (registry.npmjs.org, scope @jummon, access "public"). If Jummon decides
+# to gate this SDK behind a private registry instead of publishing it in
+# the open (e.g. while it's still pre-GA, or for enterprise-only builds),
+# swap the target here — no source change required, only publishConfig +
+# this .npmrc.
+#
+# 1. Provision a GCP Artifact Registry npm repository:
+#      gcloud artifacts repositories create jummon-npm \
+#        --repository-format=npm \
+#        --location=us-central1 \
+#        --description="Jummon private npm packages"
+#
+# 2. Point the @jummon scope at it (copy this file to .npmrc, uncomment):
+#
+# @jummon:registry=https://us-central1-npm.pkg.dev/<GCP_PROJECT_ID>/jummon-npm/
+# //us-central1-npm.pkg.dev/<GCP_PROJECT_ID>/jummon-npm/:always-auth=true
+#
+# 3. Auth (CI): use google-artifactregistry-auth (Google's official helper)
+#    rather than a long-lived token in .npmrc:
+#      npx google-artifactregistry-auth
+#    This mints a short-lived token from the runner's GCP credentials
+#    (Workload Identity / service account) and writes it into .npmrc for
+#    the duration of the job — never commit a token.
+#
+# 4. package.json publishConfig would then read:
+#      "publishConfig": {
+#        "access": "restricted",
+#        "registry": "https://us-central1-npm.pkg.dev/<GCP_PROJECT_ID>/jummon-npm/"
+#      }
+#
+# Consumers (customer apps, or Jummon's own repos) add the same
+# "@jummon:registry=..." line to their own .npmrc (or CI config) to resolve
+# @jummon/* from the private registry instead of public npm.

@@ -1,0 +1,61 @@
+# Publish @jummon/auth to the public npm registry — hardened supply-chain setup.
+#
+# GATE: runs ONLY when a human cuts a GitHub Release (never on push/PR, never from a
+# laptop). The Release is the human approval to publish that version.
+#
+# PROVENANCE (`--provenance` + `id-token: write`): npm records a signed, verifiable
+# attestation linking the published tarball to THIS repo + commit + workflow run. A
+# consumer (and npm's UI) can verify the package really came from jummon-one/jummon-auth-sdk
+# and wasn't tampered with — the core defense for a public, widely-installed SDK.
+# NOTE: provenance requires the repository to be PUBLIC.
+#
+# PREREQS (one-time, founder-gated):
+#   1. Create the `@jummon` org on npmjs.com (confirms the scope) and enable
+#      "require two-factor authentication" for the org.
+#   2. Mint a GRANULAR automation token scoped to publish `@jummon/*` ONLY (npm →
+#      Access Tokens → Granular → Packages and scopes: @jummon, Permissions: Read+Write,
+#      no other scope). Automation tokens bypass 2FA by design, so keep it publish-only.
+#   3. Add it as the repo secret `NPM_TOKEN` on jummon-one/jummon-auth-sdk.
+#   4. package.json `repository.url` must match this repo (it does) for provenance to link.
+name: Publish @jummon/auth
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  id-token: write   # OIDC → npm provenance attestation
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install (clean, lockfile-pinned)
+        run: npm ci
+
+      - name: Typecheck + build (must be green before publish)
+        run: |
+          npm run typecheck
+          npm run build
+
+      - name: Guard — release tag must match package version
+        run: |
+          pkg=$(node -p "require('./package.json').version")
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$pkg" != "$tag" ]; then
+            echo "release tag ($tag) != package.json version ($pkg) — bump package.json first"; exit 1
+          fi
+          echo "publishing @jummon/auth@$pkg"
+
+      - name: Publish to npm (public, with provenance)
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

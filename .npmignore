@@ -1,0 +1,8 @@
+src
+tsconfig.json
+tsup.config.ts
+.npmrc.example
+*.tsbuildinfo
+.turbo
+.DS_Store
+node_modules
