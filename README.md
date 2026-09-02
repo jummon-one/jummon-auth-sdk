@@ -305,7 +305,11 @@ on `snapshot.error`, so you rarely need a `try/catch` around every call):
 and "no such user" — never distinguish these in your own UI either, it's
 an enumeration leak), `invalid_mfa_code`, `rate_limited`, `passkey_failed`,
 `passkey_origin_unsupported`, `social_login_failed`,
-`cors_origin_rejected`, `network_unreachable`.
+`cors_origin_rejected`, `network_unreachable`, `state_mismatch` (also used
+by `resume()`'s social-hop CSRF check), `pkce_verifier_lost` (an
+`authenticated` response arrived but this tab's PKCE `code_verifier` is
+gone — call `resume()` on the `redirectUri` page instead of relying on the
+in-memory flow, or restart with `start()`).
 
 `invalid_redirect_uri` is special: if the auth-engine cannot recognize your
 `redirect_uri` at all, it often cannot redirect the browser *back* to you
