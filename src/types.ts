@@ -13,13 +13,13 @@
 export type JummonAuthMode = "redirect" | "headless";
 
 export interface JummonAuthOptions {
-  /** Tenant slug, e.g. "prummo". Never the tenant UUID. */
+  /** Tenant slug, e.g. "acme". Never the tenant UUID. */
   tenant: string;
-  /** OIDC public client_id registered for this tenant, e.g. "prummo-app". */
+  /** OIDC public client_id registered for this tenant, e.g. "acme-app". */
   clientId: string;
   /**
    * Absolute callback URL the browser returns to after login, e.g.
-   * "https://app.prummoapp.com.br/auth/callback". MUST exactly match one
+   * "https://app.example.com/auth/callback". MUST exactly match one
    * of the client's registered `redirect_uris` in Jummon — the auth-engine
    * rejects (or, if it cannot even redirect back, error-pages) a mismatch.
    */

@@ -4,7 +4,7 @@ The problem: `signinPopup()` opens a popup window and drives the OIDC
 authorize flow inside it. Mobile Safari, most in-app WebViews, and several
 Chrome-on-Android popup-blocking heuristics block or silently kill that
 popup, so login fails or hangs for a real slice of mobile users — this is
-exactly the failure the Prummo PWA hit.
+exactly the failure the Acme PWA hit.
 
 `@jummon/auth` wraps the same `oidc-client-ts` `UserManager` underneath,
 but drives the **full-page redirect** flow (`signinRedirect` /
@@ -17,9 +17,9 @@ there's no popup to block.
 import { UserManager } from "oidc-client-ts";
 
 const userManager = new UserManager({
-  authority: "https://idm.jummon.com/prummo/oidc",
-  client_id: "prummo-app",
-  redirect_uri: "https://app.prummoapp.com.br/auth/callback",
+  authority: "https://idm.jummon.com/acme/oidc",
+  client_id: "acme-app",
+  redirect_uri: "https://app.example.com/auth/callback",
   response_type: "code",
   scope: "openid profile email offline_access",
 });
@@ -43,9 +43,9 @@ const token = user?.access_token;
 import { createJummonAuth } from "@jummon/auth";
 
 const auth = createJummonAuth({
-  tenant: "prummo",
-  clientId: "prummo-app",
-  redirectUri: "https://app.prummoapp.com.br/auth/callback",
+  tenant: "acme",
+  clientId: "acme-app",
+  redirectUri: "https://app.example.com/auth/callback",
   scopes: ["openid", "profile", "email", "offline_access"],
 });
 
@@ -92,7 +92,7 @@ const token = await auth.getAccessToken();
 
 - The tenant, `client_id`, `redirect_uri`, and scopes are the same values
   — this is a transport change (popup → redirect), not a re-registration.
-  Your `prummo-app` client registration in Jummon needs no changes.
+  Your `acme-app` client registration in Jummon needs no changes.
 - Still a public client, still PKCE `S256`, still no secret anywhere in
   the browser.
 - The token shape (`roles[]` / `permissions[]` claims, `sub`, etc.) is

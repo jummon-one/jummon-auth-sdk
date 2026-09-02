@@ -27,13 +27,13 @@ npm install @jummon/auth
 npm install react react-dom
 ```
 
-## Quickstart — Prummo integration (copy-paste)
+## Quickstart — Acme integration (copy-paste)
 
-This is the exact configuration for the `prummo` tenant's `prummo-app`
+This is the exact configuration for the `acme` tenant's `acme-app`
 client (a **public** client — no secret, PKCE only).
 
 `redirectUri` must be an **exact match** of one of the redirect URIs
-registered for `prummo-app` in Jummon (today: `https://app.prummoapp.com.br/auth/callback`).
+registered for `acme-app` in Jummon (today: `https://app.example.com/auth/callback`).
 If it doesn't match, the IdP will not redirect back to your app —
 double-check with whoever manages the client in Jummon before debugging
 anything else. See "Errors" below for how a scope/redirect mismatch
@@ -48,9 +48,9 @@ import { JummonAuthProvider } from "@jummon/auth/react";
 export function App() {
   return (
     <JummonAuthProvider
-      tenant="prummo"
-      clientId="prummo-app"
-      redirectUri="https://app.prummoapp.com.br/auth/callback"
+      tenant="acme"
+      clientId="acme-app"
+      redirectUri="https://app.example.com/auth/callback"
       scopes={["openid", "profile", "email", "offline_access"]}
     >
       <YourRoutes />
@@ -140,7 +140,7 @@ export function Profile() {
   async function callApi() {
     const token = await getAccessToken(); // silently refreshed if expired
     if (!token) return; // signed out
-    await fetch("https://api.prummoapp.com.br/v1/orders", {
+    await fetch("https://api.example.com/v1/orders", {
       headers: { Authorization: `Bearer ${token}` },
     });
   }
@@ -160,9 +160,9 @@ your own UI copy if you display them at all.
 import { createJummonAuth } from "@jummon/auth";
 
 const auth = createJummonAuth({
-  tenant: "prummo",
-  clientId: "prummo-app",
-  redirectUri: "https://app.prummoapp.com.br/auth/callback",
+  tenant: "acme",
+  clientId: "acme-app",
+  redirectUri: "https://app.example.com/auth/callback",
   scopes: ["openid", "profile", "email", "offline_access"],
 });
 
@@ -198,8 +198,8 @@ const unsubscribe = auth.onAuthStateChanged((state) => {
 
 | Option | Required | Default | Notes |
 |---|---|---|---|
-| `tenant` | yes | — | Tenant slug (`"prummo"`), never the tenant UUID. |
-| `clientId` | yes | — | Public OIDC client id (`"prummo-app"`). Never pass a client secret — this SDK never accepts one. |
+| `tenant` | yes | — | Tenant slug (`"acme"`), never the tenant UUID. |
+| `clientId` | yes | — | Public OIDC client id (`"acme-app"`). Never pass a client secret — this SDK never accepts one. |
 | `redirectUri` | yes | — | Must exactly match a registered `redirect_uri` on the client. |
 | `scopes` | no | `["openid","profile","email","offline_access"]` | Drop `offline_access` only if you don't need silent refresh. |
 | `postLogoutRedirectUri` | no | `redirectUri` | Where the browser lands after `signOut()`. |
@@ -261,7 +261,7 @@ Options, in increasing XSS-resistance / decreasing convenience:
   never does a full reload while signed in (e.g., a single-page shell).
 
 Regardless of `tokenStorage`, this SDK never persists a `client_secret`
-(none exists — `prummo-app` is a public client) and every token exchange
+(none exists — `acme-app` is a public client) and every token exchange
 uses PKCE (`S256`).
 
 ## Requirements
