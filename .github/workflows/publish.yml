@@ -31,10 +31,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # NOTE: deliberately NO `registry-url` — that writes an .npmrc with an empty
+      # `_authToken` (we have no NPM_TOKEN), which forces token-auth mode and BLOCKS
+      # OIDC trusted publishing (npm returns E404 on PUT). Without it, npm@11 detects
+      # the OIDC id-token and authenticates via the configured Trusted Publisher.
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-          registry-url: "https://registry.npmjs.org"
 
       - name: Upgrade npm to 11.x (OIDC trusted publishing needs >= 11.5.1; npm 12 requires Node 22+, runner is Node 20)
         run: npm install -g npm@11
