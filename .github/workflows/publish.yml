@@ -1,22 +1,20 @@
-# Publish @jummon/auth to the public npm registry — hardened supply-chain setup.
+# Publish @jummon/auth to public npm — TRUSTED PUBLISHING (OIDC, tokenless).
 #
-# GATE: runs ONLY when a human cuts a GitHub Release (never on push/PR, never from a
-# laptop). The Release is the human approval to publish that version.
+# No long-lived npm token. The workflow's OIDC id-token authenticates directly to
+# npm as a verified CI publisher (exempt from per-publish 2FA/OTP), and provenance
+# is attached automatically. This is npm's recommended path (token publish is
+# deprecated, ends Jan 2027) and removes the NPM_TOKEN secret entirely.
 #
-# PROVENANCE (`--provenance` + `id-token: write`): npm records a signed, verifiable
-# attestation linking the published tarball to THIS repo + commit + workflow run. A
-# consumer (and npm's UI) can verify the package really came from jummon-one/jummon-auth-sdk
-# and wasn't tampered with — the core defense for a public, widely-installed SDK.
-# NOTE: provenance requires the repository to be PUBLIC.
+# GATE: runs ONLY when a human cuts a GitHub Release. The Release is the approval.
 #
-# PREREQS (one-time, founder-gated):
-#   1. Create the `@jummon` org on npmjs.com (confirms the scope) and enable
-#      "require two-factor authentication" for the org.
-#   2. Mint a GRANULAR automation token scoped to publish `@jummon/*` ONLY (npm →
-#      Access Tokens → Granular → Packages and scopes: @jummon, Permissions: Read+Write,
-#      no other scope). Automation tokens bypass 2FA by design, so keep it publish-only.
-#   3. Add it as the repo secret `NPM_TOKEN` on jummon-one/jummon-auth-sdk.
-#   4. package.json `repository.url` must match this repo (it does) for provenance to link.
+# ONE-TIME npm-side setup (founder-gated) — configure the Trusted Publisher on the
+# package so npm trusts this exact workflow:
+#   npmjs.com → @jummon/auth → Settings → "Trusted Publisher" → GitHub Actions →
+#     Organization/owner: jummon-one
+#     Repository:         jummon-auth-sdk
+#     Workflow filename:  publish.yml
+#     Environment:        (leave blank)
+#   Until this is configured, publish will fail with an auth error — that is expected.
 name: Publish @jummon/auth
 
 on:
@@ -25,7 +23,7 @@ on:
 
 permissions:
   contents: read
-  id-token: write   # OIDC → npm provenance attestation
+  id-token: write   # OIDC → npm trusted-publisher auth + provenance
 
 jobs:
   publish:
@@ -37,6 +35,9 @@ jobs:
         with:
           node-version: "20"
           registry-url: "https://registry.npmjs.org"
+
+      - name: Upgrade npm (OIDC trusted publishing needs npm >= 11.5.1)
+        run: npm install -g npm@latest
 
       - name: Install (clean, lockfile-pinned)
         run: npm ci
@@ -55,7 +56,7 @@ jobs:
           fi
           echo "publishing @jummon/auth@$pkg"
 
-      - name: Publish to npm (public, with provenance)
+      - name: Publish to npm (trusted publishing + provenance)
         run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        # No NODE_AUTH_TOKEN — auth comes from the OIDC id-token via the configured
+        # Trusted Publisher.
