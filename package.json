@@ -42,7 +42,8 @@
     "build": "tsup",
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "prepare": "tsup"
   },
   "dependencies": {
     "oidc-client-ts": "^3.5.0"
