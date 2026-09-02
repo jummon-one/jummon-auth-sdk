@@ -1,5 +1,5 @@
 import { JummonAuthError, mapHeadlessErrorCode } from "../errors";
-import type { HeadlessAuthEnvelope, HeadlessStartRequestBody } from "./types";
+import type { HeadlessAuthEnvelope, HeadlessErrorEnvelope, HeadlessStartRequestBody } from "./types";
 
 export interface HeadlessTransportOptions {
   tenant: string;
@@ -83,20 +83,24 @@ export class HeadlessTransport {
       );
     }
 
-    let payload: HeadlessAuthEnvelope;
+    let payload: unknown;
     try {
-      payload = (await response.json()) as HeadlessAuthEnvelope;
+      payload = await response.json();
     } catch (err) {
       throw new JummonAuthError("unknown", "Malformed response from the Jummon Auth API.", err);
     }
 
-    if (!response.ok || payload.error) {
+    // Flat error envelope on every non-2xx (wire-contract-v1.md §4.1) — no
+    // nested `error` key, so a successful parse + `!response.ok` is the only
+    // signal; a 2xx response is always the success envelope.
+    if (!response.ok) {
+      const errorPayload = payload as HeadlessErrorEnvelope;
       throw new JummonAuthError(
-        mapHeadlessErrorCode(payload.error?.code),
-        payload.error?.message ?? "Something went wrong. Try again in a moment.",
-        payload.error,
+        mapHeadlessErrorCode(errorPayload.code, errorPayload.type),
+        errorPayload.message ?? "Something went wrong. Try again in a moment.",
+        errorPayload,
       );
     }
-    return payload;
+    return payload as HeadlessAuthEnvelope;
   }
 }

@@ -33,6 +33,26 @@ export type JummonAuthErrorCode =
   | "passkey_origin_unsupported"
   | "social_login_failed"
   | "cors_origin_rejected"
+  /** Terminal `authenticated` envelope carried a `code`, but this JS realm lost `code_verifier` (e.g. a non-social reload mid-flow) — distinct from "no code at all" (`unknown`). Recovery: call `resume()`, or restart with `start()`. */
+  | "pkce_verifier_lost"
+  | "unknown";
+
+/**
+ * Backend's error taxonomy classification (`jummon-auth-engine/internal/
+ * apierror/contract.go`'s `Type`, forwarded on the headless wire as
+ * `HeadlessErrorEnvelope.type`, wire-contract-v1.md §4.3). Exists precisely
+ * so this SDK doesn't need to enumerate every `codes.go` row — see
+ * `mapByType` below.
+ */
+export type ErrorClass =
+  | "configuration"
+  | "authentication"
+  | "authorization"
+  | "temporary"
+  | "expired"
+  | "network"
+  | "not_found"
+  | "forbidden"
   | "unknown";
 
 export class JummonAuthError extends Error {
@@ -92,9 +112,27 @@ export function toJummonAuthError(err: unknown): JummonAuthError {
 }
 
 /**
- * Maps the headless Auth API's public `{error.code}` (`jummon-auth-engine/
- * internal/apierror/codes.go`) to a stable SDK `JummonAuthErrorCode`.
- * Grounded in `design/ux-spec-wave1.md` §3's error/microcopy library.
+ * Family A — the Auth API's own local vocabulary (wire-contract-v1.md
+ * §4.2), never touches auth-engine: snake_case, lowercase, not
+ * `AUTH-*`-namespaced. Checked BEFORE the `AUTH-*` table (`HEADLESS_PUBLIC_CODE_MAP`)
+ * — these codes already exist as valid `JummonAuthErrorCode` members
+ * (`flow_expired`, `cors_origin_rejected`) but previously always collapsed
+ * to "unknown" because `mapHeadlessErrorCode` only recognized `AUTH-*`-shaped
+ * strings.
+ */
+const HEADLESS_LOCAL_CODE_MAP: Record<string, JummonAuthErrorCode> = {
+  flow_token_missing: "flow_not_started",
+  flow_expired: "flow_expired",
+  cors_origin_rejected: "cors_origin_rejected",
+};
+
+/**
+ * Family B — auth-engine's public codes (`AUTH-<CATEGORY>-<NNNN>`, sourced
+ * from `jummon-auth-engine/internal/apierror/codes.go`'s `Map`), forwarded
+ * verbatim onto the headless wire. Grounded in `design/ux-spec-wave1.md` §3's
+ * error/microcopy library and wire-contract-v1.md §5. Deliberately NOT
+ * exhaustive against `codes.go`'s ~150 rows — anything unmapped falls
+ * through to `mapByType` (§4.3) instead of a bare "unknown".
  *
  * `INVALID_CREDENTIALS` (AUTH-AUTHN-2001) and `USER_NOT_FOUND`
  * (AUTH-AUTHN-2004) are deliberately collapsed to the same
@@ -123,9 +161,47 @@ const HEADLESS_PUBLIC_CODE_MAP: Record<string, JummonAuthErrorCode> = {
   "AUTH-AUTHN-2304": "social_login_failed",
 };
 
-export function mapHeadlessErrorCode(publicCode: string | null | undefined): JummonAuthErrorCode {
+/**
+ * §4.3 fallback — used only when neither Family A nor Family B matches the
+ * literal `code`. Sourced from the backend's `type` field (`ErrorClass`,
+ * already computed server-side via `parseErrorEnvelope`), so every future
+ * `codes.go` addition degrades safely without a coordinated SDK release.
+ */
+function mapByType(type: ErrorClass | undefined): JummonAuthErrorCode {
+  switch (type) {
+    case "authentication":
+      return "invalid_credentials";
+    case "authorization":
+    case "forbidden":
+      return "access_denied";
+    case "expired":
+      return "flow_expired";
+    case "network":
+      return "network_unreachable";
+    default:
+      return "unknown";
+  }
+}
+
+/**
+ * Maps the headless Auth API's `{code, type}` (wire-contract-v1.md §4) to a
+ * stable SDK `JummonAuthErrorCode`. Checks Family A verbatim first, then the
+ * Family B `AUTH-*` table, then falls back to the `type`-bucket classification
+ * — never a bare "unknown" for a code the whitelist simply hasn't caught up
+ * with yet.
+ */
+export function mapHeadlessErrorCode(
+  publicCode: string | null | undefined,
+  type?: ErrorClass,
+): JummonAuthErrorCode {
   if (!publicCode) {
     return "unknown";
   }
-  return HEADLESS_PUBLIC_CODE_MAP[publicCode] ?? "unknown";
+  if (publicCode in HEADLESS_LOCAL_CODE_MAP) {
+    return HEADLESS_LOCAL_CODE_MAP[publicCode] as JummonAuthErrorCode;
+  }
+  if (publicCode in HEADLESS_PUBLIC_CODE_MAP) {
+    return HEADLESS_PUBLIC_CODE_MAP[publicCode] as JummonAuthErrorCode;
+  }
+  return mapByType(type);
 }

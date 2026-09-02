@@ -3,8 +3,15 @@ import { buildAuthority, DEFAULT_ISSUER_HOST } from "../discovery";
 import { JummonAuthError } from "../errors";
 import { exchangeAuthorizationCode } from "../internal/tokenExchange";
 import type { JummonAuthOptions, JummonUser } from "../types";
+import { clearStoredFlow, persistFlow, readStoredFlow, stripAuthParamsFromUrl } from "./persistence";
+import { deriveState } from "./stepState";
 import { HeadlessTransport } from "./transport";
-import type { HeadlessAuthEnvelope, HeadlessFlowState, HeadlessThemeConfig } from "./types";
+import type {
+  HeadlessAuthEnvelope,
+  HeadlessFlowState,
+  HeadlessThemeConfig,
+  SocialLoginOption,
+} from "./types";
 import {
   decodeCredentialCreationOptions,
   decodeCredentialRequestOptions,
@@ -19,8 +26,12 @@ export interface HeadlessFlowSnapshot {
   flowToken: string | null;
   stepRef: string | null;
   theme: HeadlessThemeConfig | null;
-  /** Mirrors `HeadlessAuthEnvelope.passkey_origin_ok` — see `ux-spec-wave1.md` §4's visibility rules (`true` only shows the passkey affordance). */
+  /** Mirrors `HeadlessAuthEnvelope.passkey_origin_ok` — `true` only shows the passkey affordance. */
   passkeyOriginOk: boolean | null;
+  /** Mirrors `HeadlessAuthEnvelope.available_social_logins`. */
+  availableSocialLogins: SocialLoginOption[] | null;
+  /** Mirrors `HeadlessAuthEnvelope.passwordless_available`. */
+  passwordlessAvailable: boolean | null;
   data: Record<string, unknown>;
   error: JummonAuthError | null;
   user: JummonUser | null;
@@ -32,14 +43,15 @@ const IDLE_SNAPSHOT: HeadlessFlowSnapshot = {
   stepRef: null,
   theme: null,
   passkeyOriginOk: null,
+  availableSocialLogins: null,
+  passwordlessAvailable: null,
   data: {},
   error: null,
   user: null,
 };
 
 /**
- * The multi-step entrypoint for `mode: "headless"` — `system-design.md` §6
- * / `implementation-plan.md` §8's `HeadlessAuthFlow`. `HeadlessEngine`'s
+ * The multi-step entrypoint for `mode: "headless"`. `HeadlessEngine`'s
  * `signIn()` cannot express this (a single call can't model
  * `submitPassword` → maybe `needs_mfa` → `submitMfaCode` → `authenticated`);
  * this object is the real surface, obtained via
@@ -49,17 +61,27 @@ export interface HeadlessAuthFlow {
   readonly state: HeadlessFlowSnapshot;
   start(): Promise<HeadlessFlowSnapshot>;
   submitPassword(username: string, password: string): Promise<HeadlessFlowSnapshot>;
-  /** Two-phase passkey login (`system-design.md` §1.2/§7.2): submits `{username}`, then immediately resolves `navigator.credentials.get()` and submits the assertion — no second click. */
+  /** Two-phase passkey login: submits `{username}`, then immediately resolves `navigator.credentials.get()` and submits the assertion — no second click. */
   startPasskeyLogin(username: string): Promise<HeadlessFlowSnapshot>;
   /** Enrolls a new passkey during a `fido-registration` required action — resolves `navigator.credentials.create()` against the current step's challenge. */
   registerPasskey(): Promise<HeadlessFlowSnapshot>;
-  /** Full-page redirect to the provider only — never an iframe/WebView (`security-note.md` "Social redirect: system browser only"). */
+  /** Full-page redirect to the provider only — never an iframe/WebView. */
   startSocialLogin(provider: string): Promise<HeadlessFlowSnapshot>;
   submitMfaCode(code: string): Promise<HeadlessFlowSnapshot>;
   /** Generic escape hatch for any required-action step ref (`terms-agreement`, `confirm-phone`, …) so a new ref doesn't need an SDK major version. */
   submitRequiredAction(ref: string, data: Record<string, unknown>): Promise<HeadlessFlowSnapshot>;
-  /** Re-fetches the current server-side state by flow_token — needed after a full-page social-redirect round trip (`system-design.md` §7.3). */
+  /** Re-fetches the current server-side state by flow_token. */
   poll(): Promise<HeadlessFlowSnapshot>;
+  /**
+   * Resumes a flow after a full-page social-provider redirect round trip
+   * (wire-contract-v1.md §7.3). Call on mount of the page `redirectUri`
+   * points at — reads the persisted `sessionStorage` entry + the current
+   * page's `code`/`state`/`auth_resume` query params, verifies the OIDC
+   * `state` against the value stored before the redirect (CSRF guard,
+   * `state_mismatch` on mismatch), and either completes the PKCE exchange
+   * directly or falls back to `poll()` if another step remains.
+   */
+  resume(): Promise<HeadlessFlowSnapshot>;
   onStateChange(cb: (snapshot: HeadlessFlowSnapshot) => void): () => void;
   dispose(): void;
 }
@@ -71,7 +93,7 @@ export interface HeadlessAuthFlow {
  * the resulting `JummonUser`/`AuthState` is emitted through the exact same
  * `onAuthStateChanged` listeners the 8-method `AuthEngine` surface already
  * defines — the point where `HeadlessEngine` and `RedirectEngine` converge
- * on identical behavior (`implementation-plan.md` §8 item 4).
+ * on identical behavior.
  */
 export interface HeadlessSessionSink {
   completeSignIn(tokens: {
@@ -98,6 +120,15 @@ class HeadlessAuthFlowImpl implements HeadlessAuthFlow {
 
   private snapshot: HeadlessFlowSnapshot = IDLE_SNAPSHOT;
   private codeVerifier: string | null = null;
+  /** The `state` param sent at `start()` (`SigninState.id`) — round-tripped by the social hop, re-verified in `resume()`. */
+  private oidcState: string | null = null;
+  /**
+   * Single-flight guard (double-click / React StrictMode double-invoke):
+   * concurrent calls to any network-issuing method share the same in-flight
+   * promise instead of firing a duplicate request against the same
+   * flow_token.
+   */
+  private inFlight: Promise<HeadlessFlowSnapshot> | null = null;
 
   constructor(options: JummonAuthOptions, private readonly sink: HeadlessSessionSink) {
     if (typeof window === "undefined") {
@@ -131,41 +162,12 @@ class HeadlessAuthFlowImpl implements HeadlessAuthFlow {
   }
 
   dispose(): void {
+    clearStoredFlow(this.tenant, this.clientId);
     this.listeners.clear();
   }
 
-  async start(): Promise<HeadlessFlowSnapshot> {
-    this.emit({ ...IDLE_SNAPSHOT, status: "loading" });
-
-    const signinState = await SigninState.create({
-      authority: buildAuthority(this.tenant, this.issuerHost),
-      client_id: this.clientId,
-      redirect_uri: this.redirectUri,
-      scope: this.scopes.join(" "),
-      code_verifier: true,
-      nonce: generateNonce(),
-    });
-    this.codeVerifier = signinState.code_verifier ?? null;
-
-    if (!signinState.code_challenge || !this.codeVerifier) {
-      return this.applyError(
-        new JummonAuthError("unknown", "Failed to generate a PKCE code_verifier/code_challenge pair."),
-      );
-    }
-
-    try {
-      const envelope = await this.transport.start({
-        redirect_uri: this.redirectUri,
-        code_challenge: signinState.code_challenge,
-        code_challenge_method: "S256",
-        state: signinState.id,
-        nonce: signinState.nonce ?? "",
-        scopes: this.scopes,
-      });
-      return await this.applyEnvelope(envelope);
-    } catch (err) {
-      return this.applyError(err);
-    }
+  start(): Promise<HeadlessFlowSnapshot> {
+    return this.runExclusive(() => this.doStart());
   }
 
   submitPassword(username: string, password: string): Promise<HeadlessFlowSnapshot> {
@@ -174,9 +176,11 @@ class HeadlessAuthFlowImpl implements HeadlessAuthFlow {
 
   async startPasskeyLogin(username: string): Promise<HeadlessFlowSnapshot> {
     if (this.snapshot.passkeyOriginOk !== true) {
-      throw new JummonAuthError(
-        "passkey_origin_unsupported",
-        "Passkeys aren't set up for this app yet — this.state.passkeyOriginOk must be true before calling startPasskeyLogin().",
+      return this.applyError(
+        new JummonAuthError(
+          "passkey_origin_unsupported",
+          "Passkeys aren't set up for this app yet — this.state.passkeyOriginOk must be true before calling startPasskeyLogin().",
+        ),
       );
     }
 
@@ -208,9 +212,11 @@ class HeadlessAuthFlowImpl implements HeadlessAuthFlow {
   async registerPasskey(): Promise<HeadlessFlowSnapshot> {
     const optionsB64 = this.snapshot.data.fido_registration_options as string | undefined;
     if (!optionsB64) {
-      throw new JummonAuthError(
-        "passkey_failed",
-        "No passkey registration challenge is available for the current step.",
+      return this.applyError(
+        new JummonAuthError(
+          "passkey_failed",
+          "No passkey registration challenge is available for the current step.",
+        ),
       );
     }
 
@@ -229,18 +235,11 @@ class HeadlessAuthFlowImpl implements HeadlessAuthFlow {
     return this.submit({ fido_registration_response: encodeAttestationForWire(credential) });
   }
 
-  async startSocialLogin(provider: string): Promise<HeadlessFlowSnapshot> {
-    const next = await this.submit({ social_login: provider });
-    if (next.status === "needs_social_redirect") {
-      const redirectUrl = next.data.redirect_url as string | undefined;
-      if (redirectUrl) {
-        // Full-page navigation to the provider — never an in-app iframe or
-        // WebView (`security-note.md` "Social redirect: system browser
-        // only"; Google and others block embedded-WebView OAuth outright).
-        window.location.assign(redirectUrl);
-      }
-    }
-    return next;
+  startSocialLogin(provider: string): Promise<HeadlessFlowSnapshot> {
+    // The persist-then-navigate sequence lives centrally in applyEnvelope's
+    // `needs_redirect` branch (also reached for legacy-SSO redirects
+    // returned from submitRequiredAction) — never an in-app iframe/WebView.
+    return this.submit({ social_login: provider });
   }
 
   submitMfaCode(code: string): Promise<HeadlessFlowSnapshot> {
@@ -251,46 +250,244 @@ class HeadlessAuthFlowImpl implements HeadlessAuthFlow {
     return this.submit({ step_ref: ref, ...data });
   }
 
-  async poll(): Promise<HeadlessFlowSnapshot> {
-    this.requireFlowToken();
-    try {
-      const envelope = await this.transport.poll(this.snapshot.flowToken as string);
-      return await this.applyEnvelope(envelope);
-    } catch (err) {
-      return this.applyError(err);
-    }
+  poll(): Promise<HeadlessFlowSnapshot> {
+    return this.runExclusive(() => this.doPoll());
   }
 
-  private async submit(body: Record<string, unknown>): Promise<HeadlessFlowSnapshot> {
-    this.requireFlowToken();
-    this.emit({ ...this.snapshot, status: "loading" });
-    try {
-      const envelope = await this.transport.submit(this.snapshot.flowToken as string, body);
-      return await this.applyEnvelope(envelope);
-    } catch (err) {
-      return this.applyError(err);
-    }
+  resume(): Promise<HeadlessFlowSnapshot> {
+    return this.runExclusive(() => this.doResume());
   }
 
-  private requireFlowToken(): void {
-    if (!this.snapshot.flowToken) {
-      throw new JummonAuthError(
-        "flow_not_started",
-        "Call start() before submitting a step — no flow_token yet.",
+  private submit(body: Record<string, unknown>): Promise<HeadlessFlowSnapshot> {
+    return this.runExclusive(() => this.doSubmit(body));
+  }
+
+  /**
+   * Ensures only one network-issuing operation is in flight at a time — a
+   * second call while one is pending returns the SAME promise rather than
+   * firing a duplicate request (blocker: double-click / React StrictMode).
+   * Real integrator code always awaits one call before issuing the next, so
+   * collapsing a genuinely out-of-order call onto the in-flight promise is
+   * the safe default here.
+   */
+  private runExclusive(op: () => Promise<HeadlessFlowSnapshot>): Promise<HeadlessFlowSnapshot> {
+    if (this.inFlight) {
+      return this.inFlight;
+    }
+    const promise = op().finally(() => {
+      if (this.inFlight === promise) {
+        this.inFlight = null;
+      }
+    });
+    this.inFlight = promise;
+    return promise;
+  }
+
+  private async doStart(): Promise<HeadlessFlowSnapshot> {
+    this.emit({ ...IDLE_SNAPSHOT, status: "loading" });
+
+    const signinState = await SigninState.create({
+      authority: buildAuthority(this.tenant, this.issuerHost),
+      client_id: this.clientId,
+      redirect_uri: this.redirectUri,
+      scope: this.scopes.join(" "),
+      code_verifier: true,
+      nonce: generateNonce(),
+    });
+    this.codeVerifier = signinState.code_verifier ?? null;
+    this.oidcState = signinState.id;
+
+    if (!signinState.code_challenge || !this.codeVerifier) {
+      return this.applyError(
+        new JummonAuthError("unknown", "Failed to generate a PKCE code_verifier/code_challenge pair."),
       );
     }
+
+    try {
+      const envelope = await this.transport.start({
+        redirect_uri: this.redirectUri,
+        code_challenge: signinState.code_challenge,
+        code_challenge_method: "S256",
+        // SDK MUST always send `state` — needed for resume()'s CSRF check.
+        state: this.oidcState,
+        nonce: signinState.nonce ?? undefined,
+        // Singular, space-delimited — NOT `scopes: string[]`. This is what
+        // gets `offline_access` (and thus a refresh_token) to the backend;
+        // `authorize.ts`'s `input.scope || 'openid'` never read the old
+        // array field at all.
+        scope: this.scopes.join(" "),
+      });
+      // Persisted defensively on every successful start() (covers a tab
+      // reload/close-reopen mid-flow, not just the social-redirect path).
+      this.persistCurrentFlow(envelope.flow_token);
+      return await this.applyEnvelope(envelope);
+    } catch (err) {
+      return this.applyError(err);
+    }
+  }
+
+  private async doSubmit(body: Record<string, unknown>): Promise<HeadlessFlowSnapshot> {
+    if (!this.snapshot.flowToken) {
+      return this.noFlowTokenError("submitting a step");
+    }
+    this.emit({ ...this.snapshot, status: "loading" });
+    try {
+      const envelope = await this.transport.submit(this.snapshot.flowToken, body);
+      return await this.applyEnvelope(envelope);
+    } catch (err) {
+      return this.applyError(err);
+    }
+  }
+
+  private async doPoll(): Promise<HeadlessFlowSnapshot> {
+    if (!this.snapshot.flowToken) {
+      return this.noFlowTokenError("polling");
+    }
+    try {
+      const envelope = await this.transport.poll(this.snapshot.flowToken);
+      return await this.applyEnvelope(envelope);
+    } catch (err) {
+      return this.applyError(err);
+    }
+  }
+
+  /** wire-contract-v1.md §7.3. */
+  private async doResume(): Promise<HeadlessFlowSnapshot> {
+    const stored = readStoredFlow(this.tenant, this.clientId);
+    if (!stored) {
+      return this.applyError(
+        new JummonAuthError(
+          "flow_not_started",
+          "resume() called with no pending headless auth flow in this browser tab.",
+        ),
+      );
+    }
+    this.codeVerifier = stored.codeVerifier;
+    this.oidcState = stored.oidcState;
+
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get("code");
+    const state = params.get("state");
+    const authResume = params.get("auth_resume");
+    // Never leave code/state/auth_resume in the visible URL/history.
+    stripAuthParamsFromUrl();
+
+    if (code && state) {
+      if (state !== stored.oidcState) {
+        clearStoredFlow(this.tenant, this.clientId);
+        return this.applyError(
+          new JummonAuthError(
+            "state_mismatch",
+            "OIDC state returned by the social provider hop did not match the stored value.",
+          ),
+        );
+      }
+      clearStoredFlow(this.tenant, this.clientId);
+      // completeAuthenticated() already does the PKCE exchange via
+      // this.codeVerifier — same call RedirectEngine.signInCallback makes.
+      return this.completeAuthenticated({
+        flow_token: stored.flowToken,
+        status: "authenticated",
+        current_step: null,
+        data: {},
+        code,
+        oidc_state: state,
+      });
+    }
+
+    if (authResume) {
+      // Social hop completed but another step remains (e.g. MFA required
+      // even after social). JS is alive again — fall back to the normal
+      // JSON poll() path.
+      this.snapshot = { ...IDLE_SNAPSHOT, flowToken: stored.flowToken };
+      return this.doPoll();
+    }
+
+    clearStoredFlow(this.tenant, this.clientId);
+    return this.applyError(
+      new JummonAuthError(
+        "flow_not_started",
+        "resume() called on a page with neither an OIDC code nor an auth_resume marker.",
+      ),
+    );
+  }
+
+  private noFlowTokenError(action: string): HeadlessFlowSnapshot {
+    return this.applyError(
+      new JummonAuthError("flow_not_started", `Call start() before ${action} — no flow_token yet.`),
+    );
+  }
+
+  private persistCurrentFlow(flowToken: string): void {
+    if (!this.codeVerifier || !this.oidcState) {
+      // Shouldn't happen once start() has succeeded — defensive no-op.
+      return;
+    }
+    persistFlow({
+      flowToken,
+      codeVerifier: this.codeVerifier,
+      oidcState: this.oidcState,
+      tenant: this.tenant,
+      clientId: this.clientId,
+      redirectUri: this.redirectUri,
+      issuerHost: this.issuerHost,
+      savedAt: Date.now(),
+    });
   }
 
   private async applyEnvelope(envelope: HeadlessAuthEnvelope): Promise<HeadlessFlowSnapshot> {
-    if (envelope.state === "authenticated") {
+    if (envelope.status === "authenticated") {
       return this.completeAuthenticated(envelope);
     }
+
+    if (envelope.status === "unknown") {
+      // Defensive fallback — session has no step and isn't authenticated.
+      // Should not happen in steady state; never silently no-op.
+      return this.applyError(
+        new JummonAuthError(
+          "unknown",
+          "Auth API returned an unrecognized flow status; the session has no active step.",
+        ),
+      );
+    }
+
+    if (envelope.status === "needs_redirect") {
+      const redirectUrl = typeof envelope.data?.redirect_url === "string" ? envelope.data.redirect_url : undefined;
+      const next: HeadlessFlowSnapshot = {
+        status: "needs_social_redirect",
+        flowToken: envelope.flow_token,
+        stepRef: null,
+        theme: envelope.theme ?? this.snapshot.theme,
+        passkeyOriginOk: envelope.passkey_origin_ok ?? this.snapshot.passkeyOriginOk,
+        availableSocialLogins: envelope.available_social_logins ?? this.snapshot.availableSocialLogins,
+        passwordlessAvailable: envelope.passwordless_available ?? this.snapshot.passwordlessAvailable,
+        data: envelope.data ?? {},
+        error: null,
+        user: null,
+      };
+      if (redirectUrl) {
+        // Persist right before navigating away — the JS realm (this
+        // instance, this.codeVerifier) is gone the moment assign() runs.
+        this.persistCurrentFlow(envelope.flow_token);
+      }
+      this.emit(next);
+      if (redirectUrl) {
+        // Full-page navigation to the provider — never an in-app iframe or
+        // WebView (Google and others block embedded-WebView OAuth outright).
+        window.location.assign(redirectUrl);
+      }
+      return next;
+    }
+
+    // status === "needs_input"
     const next: HeadlessFlowSnapshot = {
-      status: envelope.state,
+      status: deriveState(envelope.current_step, envelope.data ?? {}),
       flowToken: envelope.flow_token,
-      stepRef: envelope.step_ref,
+      stepRef: envelope.current_step?.ref ?? null,
       theme: envelope.theme ?? this.snapshot.theme,
       passkeyOriginOk: envelope.passkey_origin_ok ?? this.snapshot.passkeyOriginOk,
+      availableSocialLogins: envelope.available_social_logins ?? this.snapshot.availableSocialLogins,
+      passwordlessAvailable: envelope.passwordless_available ?? this.snapshot.passwordlessAvailable,
       data: envelope.data ?? {},
       error: null,
       user: null,
@@ -300,9 +497,23 @@ class HeadlessAuthFlowImpl implements HeadlessAuthFlow {
   }
 
   private async completeAuthenticated(envelope: HeadlessAuthEnvelope): Promise<HeadlessFlowSnapshot> {
-    if (!envelope.code || !this.codeVerifier) {
+    if (!envelope.code) {
       return this.applyError(
         new JummonAuthError("unknown", "Auth API returned `authenticated` with no authorization code."),
+      );
+    }
+    if (!this.codeVerifier) {
+      // Distinct from "no code at all" above: we DID get a code, but this JS
+      // realm lost the PKCE verifier — most likely a non-social page reload
+      // mid-flow (the social-redirect path recovers via resume(), which
+      // restores codeVerifier from sessionStorage before ever reaching here).
+      return this.applyError(
+        new JummonAuthError(
+          "pkce_verifier_lost",
+          "Received an authorization code but no PKCE code_verifier is available in this browser tab. " +
+            "If this followed a social-provider redirect, call resume() on page load instead of relying " +
+            "on the in-memory flow; otherwise restart with start().",
+        ),
       );
     }
     try {
@@ -315,12 +526,15 @@ class HeadlessAuthFlowImpl implements HeadlessAuthFlow {
         codeVerifier: this.codeVerifier,
       });
       const user = this.sink.completeSignIn(tokens);
+      clearStoredFlow(this.tenant, this.clientId);
       const next: HeadlessFlowSnapshot = {
         status: "authenticated",
         flowToken: envelope.flow_token,
         stepRef: null,
         theme: envelope.theme ?? this.snapshot.theme,
         passkeyOriginOk: this.snapshot.passkeyOriginOk,
+        availableSocialLogins: null,
+        passwordlessAvailable: null,
         data: {},
         error: null,
         user,

@@ -215,7 +215,7 @@ const flow = auth.startAuthFlow();
 
 const unsubscribe = flow.onStateChange((snapshot) => {
   // snapshot.status: "idle" | "loading" | "needs_credentials" |
-  //   "needs_passkey_options" | "needs_passkey_assertion" | "needs_mfa" |
+  //   "needs_passkey_assertion" | "needs_mfa" |
   //   "needs_mfa_configure" | "needs_social_redirect" |
   //   "needs_required_action" | "authenticated" | "error"
   renderYourOwnUiFor(snapshot);
@@ -229,8 +229,16 @@ await flow.submitPassword(email, password);
 // passkey (only offer the button when snapshot.passkeyOriginOk === true):
 await flow.startPasskeyLogin(email); // resolves navigator.credentials.get() internally
 
-// social (full-page redirect to the provider, never an iframe):
+// social (full-page redirect to the provider, never an iframe). The SDK
+// persists {flowToken, codeVerifier, oidcState} to sessionStorage right
+// before navigating away, since this JS realm doesn't survive the round trip:
 await flow.startSocialLogin("google");
+
+// On the redirectUri page's mount (after the provider round-trip lands the
+// browser back here), call resume() instead of start() — it reconstructs the
+// flow from sessionStorage + the code/state (or auth_resume=1) query params:
+// const flow = auth.startAuthFlow();
+// await flow.resume();
 
 // MFA / any required-action step:
 await flow.submitMfaCode(code);
