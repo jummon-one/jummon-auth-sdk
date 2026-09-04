@@ -86,6 +86,27 @@ export interface JummonAuthOptions {
    * to `false` to handle `flow_expired` yourself.
    */
   autoRestartOnExpiry?: boolean;
+  /**
+   * Host that serves the Jummon API gateway (`jummon-api-gateway`) —
+   * `client.registerPasskey()`'s only consumer today
+   * (`../internal/passkeyEnrollment.ts`, `POST /catalog/me/credentials/
+   * passkeys/{begin,finish}`). Default: "api.jummon.com" (production). Use
+   * "api.jummon.dev" for the dev environment
+   * (`shared/platform.md`'s "Client calls api.jummon.dev/<path>" convention).
+   * **Never the same host as `issuerHost`** — that one serves tenant-in-path
+   * OIDC discovery only and does not proxy gateway-routed catalog-api calls;
+   * `discovery.ts`'s own doc comment calls out `api.jummon.com` as invalid
+   * there for the identical reason in reverse.
+   */
+  apiHost?: string;
+}
+
+/** Result of `JummonAuthClient.registerPasskey()` — the newly-enrolled credential. */
+export interface PasskeyRegistrationResult {
+  /** Opaque credential id, useful for a "Manage passkeys" list; never render it as a secret. */
+  credentialId: string;
+  /** Display name — the caller-supplied `name`, or a server-side default (e.g. the authenticator's own label) when omitted. */
+  name: string;
 }
 
 /** A signed-in Jummon user, derived from the validated id_token + access_token claims. */

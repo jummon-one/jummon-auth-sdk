@@ -6,6 +6,8 @@ export type { ErrorClass, JummonAuthErrorCode } from "./errors";
 
 export { buildAuthority, DEFAULT_ISSUER_HOST } from "./discovery";
 
+export { DEFAULT_API_HOST, isPasskeySupported } from "./internal/passkeyEnrollment";
+
 export type { HeadlessAuthFlow, HeadlessFlowSnapshot } from "./flow/headlessAuthFlow";
 export type {
   HeadlessAuthEnvelope,
@@ -24,6 +26,7 @@ export type {
   JummonAuthMode,
   JummonAuthOptions,
   JummonUser,
+  PasskeyRegistrationResult,
   SignInOptions,
   SignOutOptions,
 } from "./types";

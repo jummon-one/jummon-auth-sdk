@@ -51,6 +51,16 @@ Shape shipped in this SDK:
   implements against auth-engine's go-webauthn server). The passkey
   affordance is gated on `snapshot.passkeyOriginOk === true` — never offer
   a button that will always fail.
+- Standalone, **post-login** passkey enrollment (`JummonAuthClient.registerPasskey(name?)`,
+  `src/internal/passkeyEnrollment.ts`) — the opt-in "enable biometric
+  sign-in" nudge, distinct from `HeadlessAuthFlow.registerPasskey()` above
+  (that one answers a `fido-registration` step *during* login). Works in
+  both `redirect` and `headless` mode since it only needs an already-signed-in
+  session's access_token; talks to the API gateway (`apiHost`, `POST
+  /catalog/me/credentials/passkeys/{begin,finish}`), never the Auth API.
+  Gated the same way, via the exported `isPasskeySupported()` client-side
+  capability check (no per-tenant `passkeyOriginOk` signal exists outside a
+  headless login `start()`).
 - Social login still redirected — but to the social provider directly
   (`startSocialLogin`, full-page `window.location.assign`, never an
   iframe/WebView), not to `jummon-login-interface`.

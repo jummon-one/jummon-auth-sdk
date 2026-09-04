@@ -2,11 +2,13 @@ import { HeadlessEngine } from "./engines/headlessEngine";
 import { RedirectEngine } from "./engines/redirectEngine";
 import { JummonAuthError } from "./errors";
 import { createHeadlessAuthFlow, type HeadlessAuthFlow } from "./flow/headlessAuthFlow";
+import { DEFAULT_API_HOST, enrollPasskey } from "./internal/passkeyEnrollment";
 import type {
   AuthEngine,
   AuthState,
   JummonAuthOptions,
   JummonUser,
+  PasskeyRegistrationResult,
   SignInOptions,
   SignOutOptions,
 } from "./types";
@@ -29,6 +31,24 @@ export interface JummonAuthClient {
   onAuthStateChanged(cb: (state: AuthState) => void): () => void;
   /** Releases event listeners / stops background silent renew. Call on unmount in non-React apps. */
   dispose(): void;
+  /**
+   * Standalone, post-login passkey enrollment (the "Enable biometric sign-in"
+   * nudge) — works in BOTH `redirect` and `headless` mode, since it only
+   * needs an already-authenticated session's access_token, not a
+   * `HeadlessAuthFlow`. Distinct from `HeadlessAuthFlow.registerPasskey()`,
+   * which answers a `fido-registration` step *during* login — see
+   * `../internal/passkeyEnrollment.ts`'s doc comment.
+   *
+   * Requires a signed-in user: throws `not_authenticated` if
+   * `getAccessToken()` resolves to `null`. Call `isPasskeySupported()`
+   * (exported from the package root) first to decide whether to render the
+   * nudge button at all — this method throws `passkey_origin_unsupported`
+   * itself if called anyway on an unsupported browser/origin.
+   *
+   * Uses `JummonAuthOptions.apiHost` (the API gateway host), NEVER
+   * `issuerHost` — see that option's doc comment.
+   */
+  registerPasskey(name?: string): Promise<PasskeyRegistrationResult>;
 }
 
 /**
@@ -55,15 +75,15 @@ export function createJummonAuth(options: JummonAuthOptions): JummonAuthClient |
   if ((options.mode ?? "redirect") === "headless") {
     const engine = new HeadlessEngine(options);
     return {
-      ...buildClient(engine),
+      ...buildClient(engine, options),
       startAuthFlow: () => createHeadlessAuthFlow(options, engine),
     };
   }
 
-  return buildClient(new RedirectEngine(options));
+  return buildClient(new RedirectEngine(options), options);
 }
 
-function buildClient(engine: AuthEngine): JummonAuthClient {
+function buildClient(engine: AuthEngine, options: JummonAuthOptions): JummonAuthClient {
   return {
     signIn: (opts) => engine.signIn(opts),
     signInCallback: (url) => engine.signInCallback(url),
@@ -73,7 +93,24 @@ function buildClient(engine: AuthEngine): JummonAuthClient {
     isAuthenticated: () => engine.isAuthenticated(),
     onAuthStateChanged: (cb) => engine.onAuthStateChanged(cb),
     dispose: () => engine.dispose(),
+    registerPasskey: (name) => registerPasskeyViaEngine(engine, options, name),
   };
+}
+
+async function registerPasskeyViaEngine(
+  engine: AuthEngine,
+  options: JummonAuthOptions,
+  name?: string,
+): Promise<PasskeyRegistrationResult> {
+  const accessToken = await engine.getAccessToken();
+  if (!accessToken) {
+    throw new JummonAuthError(
+      "not_authenticated",
+      "registerPasskey() requires a signed-in user — call it after getUser()/isAuthenticated() " +
+        "confirms an active session.",
+    );
+  }
+  return enrollPasskey(accessToken, name, { apiHost: options.apiHost ?? DEFAULT_API_HOST });
 }
 
 function validateOptions(options: JummonAuthOptions): void {

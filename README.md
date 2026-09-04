@@ -282,6 +282,39 @@ Full state/method reference:
 §3.1/§6 and `design/ux-spec-wave1.md` (reference-screen contract, copy
 deck, error/microcopy table, passkey-affordance visibility rules).
 
+### Post-login passkey enrollment (opt-in "Enable biometric sign-in" nudge)
+
+`registerPasskey(name?)` is a **different** method from
+`flow.registerPasskey()` above — that one answers a `fido-registration`
+required-action step *during* login (headless mode only). This one runs
+**after** the user is already signed in, in either mode, and is what you call
+from a settings screen or a post-login nudge ("Enable biometric sign-in?"):
+
+```ts
+import { createJummonAuth, isPasskeySupported } from "@jummon/auth";
+
+const auth = createJummonAuth({ tenant: "acme", clientId: "acme-app", redirectUri });
+
+// Gate the nudge button — no point rendering it on an unsupported browser/origin.
+if (isPasskeySupported()) {
+  showEnableButton();
+}
+
+// On click:
+try {
+  const { credentialId, name } = await auth.registerPasskey("My phone");
+} catch (err) {
+  // err.code: "passkey_origin_unsupported" | "passkey_failed" | "not_authenticated" | "network_unreachable"
+  showRetryNudge();
+}
+```
+
+Requires an active session — throws `not_authenticated` if
+`getAccessToken()` resolves to `null` (call it after login, not before).
+Talks to the API gateway (`apiHost`, `POST /catalog/me/credentials/
+passkeys/{begin,finish}` — self-service, no RBAC), never the Auth API
+(`issuerHost`).
+
 ## API
 
 | Function | Notes |
@@ -294,6 +327,7 @@ deck, error/microcopy table, passkey-affordance visibility rules).
 | `getAccessToken()` | Current access token, silently refreshed via `refresh_token` if expired. `null` if signed out. |
 | `isAuthenticated()` | `boolean`, convenience over `getUser()`. |
 | `onAuthStateChanged(cb)` | Subscribes to `{status:"loading"\|"authenticated"\|"unauthenticated"}`. Fires once immediately. Returns an unsubscribe function. |
+| `registerPasskey(name?)` | Standalone, **post-login** passkey enrollment (works in both `redirect` and `headless` mode — see below). |
 
 `createJummonAuth(options)`:
 
@@ -305,6 +339,7 @@ deck, error/microcopy table, passkey-affordance visibility rules).
 | `scopes` | no | `["openid","profile","email","offline_access"]` | Drop `offline_access` only if you don't need silent refresh. |
 | `postLogoutRedirectUri` | no | `redirectUri` | Where the browser lands after `signOut()`. |
 | `issuerHost` | no | `"idm.jummon.com"` | `"idm.jummon.dev"` for the dev environment. Never hardcode a full OIDC URL — this is the only host you configure; every endpoint is resolved from the tenant's discovery document. |
+| `apiHost` | no | `"api.jummon.com"` | `"api.jummon.dev"` for the dev environment. Only used by `registerPasskey()` (the API gateway host, `POST /catalog/me/credentials/passkeys/*`) — **never the same host as `issuerHost`**, which is OIDC/discovery-only. |
 | `tokenStorage` | no | `"session"` | `"session" \| "local" \| "memory"` — see Security below. |
 | `automaticSilentRenew` | no | `true` | Background renewal before the access token expires. |
 | `autoAdvanceInternalSteps` | no | `true` | Headless only. Auto-submits `{}` past input-less internal steps (`check-session-id`, `ip-blocklist`, `ip-allowlist`) instead of surfacing them as `current_step`. |
@@ -322,7 +357,14 @@ switch on `code`, never on `.message` (free to change). Common codes:
 `login_required`, `access_denied`, `interaction_required`,
 `consent_required`, `invalid_redirect_uri`, `state_mismatch`,
 `silent_renew_failed`, `callback_missing_params`, `ssr_unsupported`,
-`invalid_options`.
+`invalid_options`, `not_authenticated` (`registerPasskey()` called with no
+active session).
+
+`registerPasskey()` can also throw `passkey_origin_unsupported` (browser/
+origin has no WebAuthn — check `isPasskeySupported()` first),
+`passkey_failed` (ceremony cancelled or rejected by the server — catalog-api
+collapses several distinct upstream failures into this single code; the
+right UX is always "try again"), and `network_unreachable`.
 
 Headless-mode-specific codes (`HeadlessAuthFlow` snapshots also carry these
 on `snapshot.error`, so you rarely need a `try/catch` around every call):
