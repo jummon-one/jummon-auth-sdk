@@ -63,6 +63,29 @@ export interface JummonAuthOptions {
    * token storage" for the trade-off vs. an httpOnly-cookie-backed BFF.
    */
   tokenStorage?: "session" | "local" | "memory";
+  /**
+   * Headless mode only. The Auth API interleaves a few input-less internal
+   * steps (`check-session-id`, `ip-blocklist`, `ip-allowlist`) that the
+   * hosted SSR login auto-advances server-side (`loginHandler.ts`'s
+   * `AUTO_POST_STEPS`/`autoProceed`) but the headless wire does not — left
+   * unhandled, they'd surface to the app as a phantom "action required"
+   * step. Default: true — `HeadlessAuthFlow` auto-submits `{}` for these
+   * refs (bounded retries) and never emits them as `current_step`. Set to
+   * `false` to see them yourself (they fall through to the generic
+   * `needs_required_action` state).
+   */
+  autoAdvanceInternalSteps?: boolean;
+  /**
+   * Headless mode only. The flow_token has a short (~5min) absolute TTL; a
+   * step submitted after expiry fails with `{type:"expired", code:
+   * "flow_expired"}`. Default: true — `HeadlessAuthFlow` transparently calls
+   * `start()` again (same tenant/client/redirectUri/scope, fresh PKCE pair)
+   * and re-emits from the first step instead of surfacing the error. The
+   * restarted snapshot carries `restartedAfterExpiry: true` exactly once so
+   * the app can react (e.g. clear a stale form) with a one-line check. Set
+   * to `false` to handle `flow_expired` yourself.
+   */
+  autoRestartOnExpiry?: boolean;
 }
 
 /** A signed-in Jummon user, derived from the validated id_token + access_token claims. */

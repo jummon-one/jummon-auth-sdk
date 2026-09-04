@@ -264,6 +264,19 @@ await flow.submitRequiredAction("terms-agreement", { accepted: true });
 `headless_requires_flow` in this mode — `startAuthFlow()` is the real
 entrypoint, because a single call can't express a multi-step login.
 
+**Handled automatically (on by default, opt-out via `createJummonAuth` options):**
+- **Internal steps** (`check-session-id`, `ip-blocklist`, `ip-allowlist`) — the
+  Auth API interleaves these with no UI of their own; the SDK auto-submits
+  `{}` and never surfaces them as `current_step` (`autoAdvanceInternalSteps`,
+  default `true`).
+- **`otp-input-form`'s wire field** — `submitMfaCode(code)` always sends
+  `{ otp: code }`, the field the backend actually reads.
+- **`flow_expired`** (flow_token TTL ~5min) — the SDK transparently calls
+  `start()` again (same tenant/client/redirectUri/scope, fresh PKCE) and
+  re-emits from the first step (`autoRestartOnExpiry`, default `true`). The
+  one snapshot right after a restart carries `restartedAfterExpiry: true` so
+  you can react in one line, e.g. `if (snapshot.restartedAfterExpiry) resetMyForm();`.
+
 Full state/method reference:
 `engineering-team/initiatives/headless-embeddable-auth/design/system-design.md`
 §3.1/§6 and `design/ux-spec-wave1.md` (reference-screen contract, copy
@@ -294,6 +307,8 @@ deck, error/microcopy table, passkey-affordance visibility rules).
 | `issuerHost` | no | `"idm.jummon.com"` | `"idm.jummon.dev"` for the dev environment. Never hardcode a full OIDC URL — this is the only host you configure; every endpoint is resolved from the tenant's discovery document. |
 | `tokenStorage` | no | `"session"` | `"session" \| "local" \| "memory"` — see Security below. |
 | `automaticSilentRenew` | no | `true` | Background renewal before the access token expires. |
+| `autoAdvanceInternalSteps` | no | `true` | Headless only. Auto-submits `{}` past input-less internal steps (`check-session-id`, `ip-blocklist`, `ip-allowlist`) instead of surfacing them as `current_step`. |
+| `autoRestartOnExpiry` | no | `true` | Headless only. Transparently restarts the flow on `flow_expired` instead of surfacing the error — see above. |
 
 React (`@jummon/auth/react`): `JummonAuthProvider` (props = the options
 above + `children`), `useJummonAuth()` (returns `{ client, state, user,

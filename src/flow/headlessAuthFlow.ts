@@ -21,6 +21,19 @@ import {
 
 const DEFAULT_SCOPES = ["openid", "profile", "email", "offline_access"];
 
+/**
+ * `current_step.ref`s the backend intercalates purely for internal
+ * bookkeeping (session reconciliation, IP allow/blocklist) — no UI exists
+ * for them anywhere, hosted SSR or otherwise. Mirrors `loginHandler.ts`'s
+ * `AUTO_POST_STEPS` on the hosted side; the headless wire does not (yet)
+ * replicate that auto-post loop itself, so `HeadlessAuthFlowImpl` does it
+ * client-side (`autoAdvanceInternalSteps`, default true).
+ */
+const INTERNAL_STEP_REFS = new Set(["check-session-id", "ip-blocklist", "ip-allowlist"]);
+
+/** Mirrors `loginHandler.ts`'s `MAX_AUTO_POST_DEPTH` — a circuit breaker, not an expected depth. */
+const MAX_AUTO_ADVANCE_DEPTH = 5;
+
 export interface HeadlessFlowSnapshot {
   status: HeadlessFlowState | "idle" | "loading";
   flowToken: string | null;
@@ -35,6 +48,14 @@ export interface HeadlessFlowSnapshot {
   data: Record<string, unknown>;
   error: JummonAuthError | null;
   user: JummonUser | null;
+  /**
+   * `true` on the single snapshot emitted right after an automatic
+   * `flow_expired` restart (`autoRestartOnExpiry`) — absent on every other
+   * snapshot, including the ones that follow. A one-line check
+   * (`if (snapshot.restartedAfterExpiry) …`) is enough for the app to react
+   * (e.g. clear a stale password field, show a toast).
+   */
+  restartedAfterExpiry?: boolean;
 }
 
 const IDLE_SNAPSHOT: HeadlessFlowSnapshot = {
@@ -116,6 +137,8 @@ class HeadlessAuthFlowImpl implements HeadlessAuthFlow {
   private readonly redirectUri: string;
   private readonly issuerHost: string;
   private readonly scopes: string[];
+  private readonly autoAdvanceInternalSteps: boolean;
+  private readonly autoRestartOnExpiry: boolean;
   private readonly listeners = new Set<(snapshot: HeadlessFlowSnapshot) => void>();
 
   private snapshot: HeadlessFlowSnapshot = IDLE_SNAPSHOT;
@@ -129,6 +152,8 @@ class HeadlessAuthFlowImpl implements HeadlessAuthFlow {
    * flow_token.
    */
   private inFlight: Promise<HeadlessFlowSnapshot> | null = null;
+  /** Guards `applyErrorOrRestart` against restarting a restart (see its doc comment). */
+  private restartingAfterExpiry = false;
 
   constructor(options: JummonAuthOptions, private readonly sink: HeadlessSessionSink) {
     if (typeof window === "undefined") {
@@ -142,6 +167,8 @@ class HeadlessAuthFlowImpl implements HeadlessAuthFlow {
     this.redirectUri = options.redirectUri;
     this.issuerHost = options.issuerHost ?? DEFAULT_ISSUER_HOST;
     this.scopes = options.scopes ?? DEFAULT_SCOPES;
+    this.autoAdvanceInternalSteps = options.autoAdvanceInternalSteps ?? true;
+    this.autoRestartOnExpiry = options.autoRestartOnExpiry ?? true;
     this.transport = new HeadlessTransport({
       tenant: this.tenant,
       clientId: this.clientId,
@@ -242,8 +269,9 @@ class HeadlessAuthFlowImpl implements HeadlessAuthFlow {
     return this.submit({ social_login: provider });
   }
 
+  /** `otp-input-form`'s wire field is `otp` — confirmed against a live tenant (a `{code: ...}` body is silently ignored server-side). */
   submitMfaCode(code: string): Promise<HeadlessFlowSnapshot> {
-    return this.submit({ code });
+    return this.submit({ otp: code });
   }
 
   submitRequiredAction(ref: string, data: Record<string, unknown>): Promise<HeadlessFlowSnapshot> {
@@ -335,7 +363,7 @@ class HeadlessAuthFlowImpl implements HeadlessAuthFlow {
       const envelope = await this.transport.submit(this.snapshot.flowToken, body);
       return await this.applyEnvelope(envelope);
     } catch (err) {
-      return this.applyError(err);
+      return this.applyErrorOrRestart(err);
     }
   }
 
@@ -347,7 +375,7 @@ class HeadlessAuthFlowImpl implements HeadlessAuthFlow {
       const envelope = await this.transport.poll(this.snapshot.flowToken);
       return await this.applyEnvelope(envelope);
     } catch (err) {
-      return this.applyError(err);
+      return this.applyErrorOrRestart(err);
     }
   }
 
@@ -435,7 +463,34 @@ class HeadlessAuthFlowImpl implements HeadlessAuthFlow {
     });
   }
 
-  private async applyEnvelope(envelope: HeadlessAuthEnvelope): Promise<HeadlessFlowSnapshot> {
+  /**
+   * Silently resolves any leading run of input-less internal steps
+   * (`INTERNAL_STEP_REFS`) by submitting `{}` on the caller's behalf,
+   * bounded by `MAX_AUTO_ADVANCE_DEPTH`. A no-op (single pass-through) when
+   * `autoAdvanceInternalSteps` is off or the current step isn't one of
+   * these refs. Runs BEFORE any other envelope branching in `applyEnvelope`
+   * so `start()`/`submit()`/`poll()` all get the same treatment regardless
+   * of where in the step-machine the backend happens to interleave one.
+   */
+  private async advancePastInternalSteps(envelope: HeadlessAuthEnvelope): Promise<HeadlessAuthEnvelope> {
+    let current = envelope;
+    let depth = 0;
+    while (
+      this.autoAdvanceInternalSteps &&
+      current.status === "needs_input" &&
+      current.current_step !== null &&
+      INTERNAL_STEP_REFS.has(current.current_step.ref) &&
+      depth < MAX_AUTO_ADVANCE_DEPTH
+    ) {
+      current = await this.transport.submit(current.flow_token, {});
+      depth += 1;
+    }
+    return current;
+  }
+
+  private async applyEnvelope(rawEnvelope: HeadlessAuthEnvelope): Promise<HeadlessFlowSnapshot> {
+    const envelope = await this.advancePastInternalSteps(rawEnvelope);
+
     if (envelope.status === "authenticated") {
       return this.completeAuthenticated(envelope);
     }
@@ -544,6 +599,43 @@ class HeadlessAuthFlowImpl implements HeadlessAuthFlow {
     } catch (err) {
       return this.applyError(err);
     }
+  }
+
+  /**
+   * Catch-site wrapper for the two network-issuing calls that can hit an
+   * expired flow_token (`submit`/`poll`). On `flow_expired`, transparently
+   * calls `doStart()` again — same tenant/client/redirectUri/scope (all
+   * still held as instance fields), a fresh PKCE pair (correct practice for
+   * a brand-new AuthRequest) — and re-emits from the first step instead of
+   * surfacing the error, marking the resulting snapshot
+   * `restartedAfterExpiry: true` exactly once. `restartingAfterExpiry`
+   * guards against restarting a restart (defensive; `doStart()`'s own
+   * failures never come back as `flow_expired` since it doesn't send a
+   * flow_token). Falls through to the plain `applyError` path for every
+   * other error, or when `autoRestartOnExpiry` is off.
+   */
+  private async applyErrorOrRestart(err: unknown): Promise<HeadlessFlowSnapshot> {
+    const authError =
+      err instanceof JummonAuthError
+        ? err
+        : new JummonAuthError("unknown", err instanceof Error ? err.message : "Unknown error.", err);
+
+    if (authError.code === "flow_expired" && this.autoRestartOnExpiry && !this.restartingAfterExpiry) {
+      this.restartingAfterExpiry = true;
+      try {
+        const restarted = await this.doStart();
+        if (restarted.status === "error") {
+          return restarted;
+        }
+        const flagged: HeadlessFlowSnapshot = { ...restarted, restartedAfterExpiry: true };
+        this.emit(flagged);
+        return flagged;
+      } finally {
+        this.restartingAfterExpiry = false;
+      }
+    }
+
+    return this.applyError(authError);
   }
 
   private applyError(err: unknown): HeadlessFlowSnapshot {

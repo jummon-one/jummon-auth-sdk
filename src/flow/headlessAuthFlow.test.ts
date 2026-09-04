@@ -465,6 +465,126 @@ describe("HeadlessAuthFlow", () => {
     expect(seen[seen.length - 1]).toBe("needs_credentials");
   });
 
+  // --- Prummo resilience #1: internal steps (check-session-id, ip-allow/blocklist) --
+
+  it("auto-submits {} past an internal step (check-session-id) and never surfaces it as current_step", async () => {
+    transportMock.start.mockResolvedValue(envelope({ current_step: { ref: "check-session-id" } }));
+    transportMock.submit.mockResolvedValueOnce(envelope({ current_step: { ref: "username-password-form" } }));
+    const flow = createHeadlessAuthFlow(OPTIONS, sink);
+
+    const snapshot = await flow.start();
+
+    expect(transportMock.submit).toHaveBeenCalledWith("ft-1", {});
+    expect(snapshot.status).toBe("needs_credentials");
+    expect(snapshot.stepRef).toBe("username-password-form");
+  });
+
+  it("chains through several internal steps in one call, bounded by MAX_AUTO_ADVANCE_DEPTH", async () => {
+    transportMock.start.mockResolvedValue(envelope({ current_step: { ref: "ip-blocklist" } }));
+    transportMock.submit
+      .mockResolvedValueOnce(envelope({ current_step: { ref: "ip-allowlist" } }))
+      .mockResolvedValueOnce(envelope({ current_step: { ref: "check-session-id" } }))
+      .mockResolvedValueOnce(envelope({ current_step: { ref: "username-password-form" } }));
+    const flow = createHeadlessAuthFlow(OPTIONS, sink);
+
+    const snapshot = await flow.start();
+
+    expect(transportMock.submit).toHaveBeenCalledTimes(3);
+    expect(snapshot.status).toBe("needs_credentials");
+  });
+
+  it("gives up after MAX_AUTO_ADVANCE_DEPTH and falls back to the generic required-action state rather than looping forever", async () => {
+    transportMock.start.mockResolvedValue(envelope({ current_step: { ref: "check-session-id" } }));
+    transportMock.submit.mockResolvedValue(envelope({ current_step: { ref: "check-session-id" } }));
+    const flow = createHeadlessAuthFlow(OPTIONS, sink);
+
+    const snapshot = await flow.start();
+
+    expect(transportMock.submit).toHaveBeenCalledTimes(5); // MAX_AUTO_ADVANCE_DEPTH
+    expect(snapshot.status).toBe("needs_required_action");
+    expect(snapshot.stepRef).toBe("check-session-id");
+  });
+
+  it("autoAdvanceInternalSteps: false surfaces the internal step ref as-is (opt-out)", async () => {
+    transportMock.start.mockResolvedValue(envelope({ current_step: { ref: "check-session-id" } }));
+    const flow = createHeadlessAuthFlow({ ...OPTIONS, autoAdvanceInternalSteps: false }, sink);
+
+    const snapshot = await flow.start();
+
+    expect(transportMock.submit).not.toHaveBeenCalled();
+    expect(snapshot.stepRef).toBe("check-session-id");
+    expect(snapshot.status).toBe("needs_required_action");
+  });
+
+  // --- Prummo resilience #2: MFA submits the `otp` field, not `code` --------
+
+  it("submitMfaCode() sends { otp } on the wire, never { code }", async () => {
+    transportMock.start.mockResolvedValue(envelope({ current_step: { ref: "otp-input-form" } }));
+    transportMock.submit.mockResolvedValue(
+      envelope({ status: "authenticated", current_step: null, code: "auth-code", oidc_state: "s", data: {} }),
+    );
+    vi.mocked(exchangeAuthorizationCode).mockResolvedValue({
+      access_token: "at",
+      token_type: "Bearer",
+    });
+    const flow = createHeadlessAuthFlow(OPTIONS, sink);
+    await flow.start();
+
+    await flow.submitMfaCode("257424");
+
+    expect(transportMock.submit).toHaveBeenCalledWith("ft-1", { otp: "257424" });
+  });
+
+  // --- Prummo resilience #3: flow_expired auto-restarts the flow ------------
+
+  it("submit() on an expired flow_token transparently restarts via start() and marks the snapshot restartedAfterExpiry", async () => {
+    transportMock.start
+      .mockResolvedValueOnce(envelope({ flow_token: "ft-1", current_step: { ref: "username-password-form" } }))
+      .mockResolvedValueOnce(envelope({ flow_token: "ft-2", current_step: { ref: "username-password-form" } }));
+    transportMock.submit.mockRejectedValueOnce(
+      new JummonAuthError("flow_expired", "flow expired", { code: "flow_expired", type: "expired" }),
+    );
+    const flow = createHeadlessAuthFlow(OPTIONS, sink);
+    await flow.start();
+
+    const snapshot = await flow.submitPassword("jane@example.com", "hunter2");
+
+    expect(transportMock.start).toHaveBeenCalledTimes(2); // original start() + auto-restart
+    expect(snapshot.status).toBe("needs_credentials");
+    expect(snapshot.flowToken).toBe("ft-2"); // fresh flow_token from the restart, not the expired one
+    expect(snapshot.restartedAfterExpiry).toBe(true);
+    expect(snapshot.error).toBeNull();
+  });
+
+  it("a snapshot right after a restart is exactly one snapshot — the NEXT transition drops restartedAfterExpiry", async () => {
+    transportMock.start
+      .mockResolvedValueOnce(envelope({ flow_token: "ft-1" }))
+      .mockResolvedValueOnce(envelope({ flow_token: "ft-2" }));
+    transportMock.submit
+      .mockRejectedValueOnce(new JummonAuthError("flow_expired", "flow expired"))
+      .mockResolvedValueOnce(envelope({ flow_token: "ft-2", current_step: { ref: "otp-input-form" } }));
+    const flow = createHeadlessAuthFlow(OPTIONS, sink);
+    await flow.start();
+    await flow.submitPassword("jane@example.com", "hunter2"); // triggers the restart
+
+    const snapshot = await flow.submitPassword("jane@example.com", "hunter2"); // normal call post-restart
+
+    expect(snapshot.restartedAfterExpiry).toBeUndefined();
+  });
+
+  it("autoRestartOnExpiry: false surfaces flow_expired as a normal error snapshot (opt-out)", async () => {
+    transportMock.start.mockResolvedValue(envelope());
+    transportMock.submit.mockRejectedValue(new JummonAuthError("flow_expired", "flow expired"));
+    const flow = createHeadlessAuthFlow({ ...OPTIONS, autoRestartOnExpiry: false }, sink);
+    await flow.start();
+
+    const snapshot = await flow.submitPassword("jane@example.com", "hunter2");
+
+    expect(snapshot.status).toBe("error");
+    expect(snapshot.error?.code).toBe("flow_expired");
+    expect(transportMock.start).toHaveBeenCalledTimes(1); // no auto-restart
+  });
+
   it("dispose() clears any persisted pending flow", async () => {
     transportMock.start.mockResolvedValue(envelope());
     const flow = createHeadlessAuthFlow(OPTIONS, sink);
