@@ -186,12 +186,16 @@ const unsubscribe = auth.onAuthStateChanged((state) => {
 
 ## Headless / embeddable mode (`mode: "headless"`)
 
-**Status: SDK-side code is dev-ready; the backend Auth API it talks to
-(`jummon-login-interface`'s `/api/v1/auth/*` namespace) is a separate,
-not-yet-shipped dispatch — see
-`engineering-team/initiatives/headless-embeddable-auth/`. Do not point this
-at a tenant in production until that route exists and the tenant has
-`headless_embeddable_auth` enabled.**
+**Status: the backend Auth API this mode talks to
+(`jummon-login-interface`'s `/api/v1/auth/*` namespace) is LIVE in
+production** (Wave 1, since 2026-09-04) — see
+`engineering-team/initiatives/headless-embeddable-auth/`. It is **per-tenant
+flag-gated** (`headless_embeddable_auth`), currently enabled via
+tenant-override for a single production tenant (`prummo` / client
+`prummo-app`); every other tenant gets a `404 not_found` on `/api/v1/auth/*`
+until it is explicitly opted in — this is not yet a general-availability
+rollout. Confirm with the Jummon team that your tenant has the flag enabled
+before pointing this at production.
 
 Your app renders its own sign-in form — email+password, passkey (WebAuthn),
 and social (redirect-to-provider) — instead of navigating to Jummon's
