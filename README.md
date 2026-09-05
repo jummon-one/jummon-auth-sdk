@@ -374,6 +374,56 @@ Any other `ref` not in either table: render a generic "action required" UI
 and call `flow.submitRequiredAction(ref, data)` — never ignore an unknown
 `ref` silently, that leaves the user stuck with no explanation.
 
+### Opt-in client risk-signal collection (`collectRiskSignals`)
+
+Initiative #85 — a **narrow, opt-in, allowlisted** set of coarse client
+signals attached to the submit-step body as a *corroborating hint* for
+server-side identity-risk detection. Default is **off**: unless you pass
+`collectRiskSignals: true`, nothing is collected and the request body is
+byte-for-byte what it always was.
+
+```ts
+const auth = createJummonAuth({
+  tenant: "acme",
+  clientId: "acme-app",
+  redirectUri: "https://app.acme.com/callback",
+  mode: "headless",
+  collectRiskSignals: true,
+});
+```
+
+When enabled, every `submit`-step call (`submitPassword`, `submitMfaCode`,
+`submitDeviceConsent`, etc. — never `start()`/`poll()`) attaches a
+`risk_signals` object to the JSON body, **exactly** this shape, nothing else:
+
+| Key | Meaning |
+|---|---|
+| `device_id` | First-party, opaque random, per-`(tenant, client)`, persisted via your `tokenStorage` — **rotates on `signOut()`**, even a `signOut({redirect:false})` with no active session |
+| `tz` | Coarse IANA timezone (e.g. `"America/Sao_Paulo"`), from `Intl` |
+| `lang` | Primary language tag (e.g. `"pt-BR"`), from `navigator.language` |
+| `device_class` | Coarse `"mobile"` \| `"tablet"` \| `"desktop"` — UA-Client-Hints/viewport-width heuristic, never a full User-Agent string |
+| `flow_ms` | Total elapsed ms from this flow's `start()` to the current submit |
+| `schema` | Literal `"v1"` |
+
+**This allowlist is a hard constraint, not a default you can widen from the
+app** — there is no canvas/WebGL/audio/font fingerprinting, no
+keystroke/mouse-movement biometrics, no client-asserted IP, no precise
+geolocation anywhere in this collector, and no parameter that adds one.
+Full spec, server-side handling, and the security rationale:
+`engineering-team/initiatives/risk-signal-collector/README.md`. The signal
+is never authoritative — the server re-applies the same allowlist on
+ingest and treats it as non-authoritative corroboration alongside its own
+server-derived signals (source IP, IP-derived country), never the sole
+basis for a decision.
+
+`tz`/`lang`/`device_class` come from the platform's `PlatformRiskSignals`
+adapter (`@jummon/auth/core`) — present by default on web
+(`createBrowserPlatformAdapters`) and on
+[`@jummon/auth-react-native`](./packages/react-native/README.md#risk-signals).
+`device_id`/`flow_ms`/`schema` need no adapter — the agnostic core computes
+them itself, so they're present on any platform even before it implements
+`PlatformRiskSignals`.
+
 ### Post-login passkey enrollment (opt-in "Enable biometric sign-in" nudge)
 
 `registerPasskey(name?)` is a **different** method from

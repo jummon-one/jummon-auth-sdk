@@ -130,3 +130,38 @@ shape and the DOM-shaped `PublicKeyCredential` the agnostic core speaks. Omit
 `createJummonAuthReactNative()` entirely if passkeys aren't in scope yet —
 `registerPasskey()`/`startPasskeyLogin()` degrade to a clear
 `passkey_origin_unsupported`/`passkey_failed` error instead of crashing.
+
+## Risk signals
+
+Opt-in client risk-signal collection (initiative #85 — see
+[`@jummon/auth`'s README](../../README.md#opt-in-client-risk-signal-collection-collectrisksignals)
+for the full allowlist/spec) works the same as on web: pass
+`collectRiskSignals: true` in the options you give
+`createJummonAuthReactNative()`. `device_id`/`flow_ms`/`schema` need no RN
+dependency at all (computed by the agnostic core against your
+`asyncStorage`/`expoCrypto` deps); `tz` has a built-in `Intl` fallback that
+works out of the box on modern Hermes; `lang`/`device_class` have no
+first-party RN API, so supply them yourself (RN has no built-in
+`navigator.language` equivalent):
+
+```ts
+import * as Localization from "expo-localization"; // or react-native-localize
+
+const client = createJummonAuthReactNative(
+  { tenant: "acme", clientId: "acme-app", redirectUri: "acme://auth/callback", collectRiskSignals: true },
+  {
+    asyncStorage: AsyncStorage,
+    secureStore: SecureStore,
+    expoCrypto: ExpoCrypto,
+    linking: Linking,
+    riskSignals: {
+      getLanguage: () => Localization.getLocales()[0]?.languageTag ?? null,
+      getDeviceClass: () => (Localization.getLocales()[0] /* or Dimensions-based heuristic */ ? "mobile" : null),
+    },
+  },
+);
+```
+
+Omit `riskSignals` entirely for the `Intl`-only fallback (timezone only) —
+`createReactNativeRiskSignals()` never throws and every field degrades to
+`null` rather than crashing when a dep is missing or its callback throws.

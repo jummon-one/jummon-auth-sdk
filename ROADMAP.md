@@ -406,6 +406,64 @@ to matter in practice (oidc-client-ts's `UserManagerSettings` has its own
 `revokeTokensOnSignout` option that could cover it without hand-rolling a
 second `revokeToken()` call site).
 
+### #85 client risk-signal collector (SHIPPED — dev-ready, flag-OFF by default)
+
+`engineering-team/initiatives/risk-signal-collector/README.md`'s
+allowlist/bans, implemented end to end:
+
+- **New injectable**: `PlatformRiskSignals` (`core/platform/types.ts`) —
+  three synchronous, coarse lookups (`getTimezone`/`getLanguage`/
+  `getDeviceClass`), optional on `PlatformAdapters` like `webauthn`. There
+  is structurally no method on this interface that could return a canvas/
+  WebGL/audio/font fingerprint, a keystroke/mouse biometric, an IP, or
+  precise geolocation — the bans are enforced by absence, not a filter.
+  Browser adapter: `platform/browser/riskSignals.ts` (`Intl` for tz,
+  `navigator.language` for lang, a UA-Client-Hints-coarse-boolean-or-
+  viewport-width heuristic for device_class — never a full UA string
+  parse). RN adapter: `packages/react-native/src/adapters/riskSignals.ts`
+  (`createReactNativeRiskSignals`) — `Intl` fallback for tz (works out of
+  the box on modern Hermes), `lang`/`device_class` need an app-supplied
+  callback (no first-party RN API for either), every callback defensively
+  wrapped so a missing dep or a throw degrades to `null`, never a crash.
+- **`device_id`/`flow_ms`/`schema` need no platform adapter** — computed by
+  the core itself. `core/deviceId.ts`'s `getOrCreateDeviceId()`/
+  `rotateDeviceId()` persist a per-`(tenant,client)` opaque random id via
+  the existing `PlatformStorage`+`PlatformCrypto` adapters (same
+  `generateOpaqueId()` PKCE already uses), shared between
+  `HeadlessEngineCore` (which rotates it) and `HeadlessAuthFlowCore` (which
+  reads it) so there is one source of truth regardless of how many flow
+  instances a caller creates. `flow_ms` = `Date.now()` at `start()` (stored
+  in `StoredHeadlessFlow.flowStartedAt` — distinct from `savedAt`, which
+  gets refreshed on every re-persist including right before a social
+  redirect — so a resumed flow still measures from the ORIGINAL start)
+  minus `Date.now()` at the current submit.
+- **Opt-in, default OFF**: `JummonAuthOptions.collectRiskSignals` (default
+  `false`) — `HeadlessAuthFlowCore.buildRiskSignals()` returns `undefined`
+  (no field at all, not an empty object) unless this is `true`.
+- **Attachment point**: `HeadlessAuthFlowCore.doSubmit()` — the single
+  choke point every public submit-style method funnels through
+  (`submitPassword`/`setPassword`/`submitMfaCode`/`confirmMfaSetup`/
+  `submitTermsAgreement`/`submitDeviceConsent`/`submitRequiredAction`/the
+  second phase of `startPasskeyLogin`/`registerPasskey`/
+  `startSocialLogin`). `start()`/`poll()` never carry it — `flow_ms` is
+  only meaningful relative to a submit, and the spec's own wording is
+  "submit-step body". Merged additively (`{...body, risk_signals}`),
+  never replacing the caller's own fields.
+- **Rotation on signOut**: `HeadlessEngineCore.signOut()` calls
+  `rotateDeviceId()` unconditionally (even `redirect:false`, even with no
+  active session) — same best-effort posture as the revocation fix above.
+
+Verified: 6 tests in `core/deviceId.test.ts` (mint/persist/stable/
+namespaced-by-tenant+client/rotate/best-effort-on-storage-failure), 4 in
+`flow/headlessAuthFlow.test.ts` (absent by default, absent when explicitly
+`false`, allowlist-only keys present when `true`, device_id stable across
+two submits in one flow), 1 end-to-end integration test
+(`core/riskSignals.integration.test.ts`, real browser storage/crypto +
+mocked network) proving device_id survives across two submits and then
+CHANGES after `HeadlessEngine.signOut()`, 5 in
+`packages/react-native/src/adapters/riskSignals.test.ts` + 2 in that
+package's `adapters/index.test.ts` (mocked natives, no RN runtime).
+
 ## Follow-ups filed, not built in this pass
 
 - **Typed submit builders for `verify-email-form`/`validate-phone-form`** —
