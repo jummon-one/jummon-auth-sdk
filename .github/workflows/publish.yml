@@ -1,21 +1,38 @@
-# Publish @jummon/auth to public npm — TRUSTED PUBLISHING (OIDC, tokenless).
+# Publish jummon-auth-sdk packages — TRUSTED PUBLISHING (OIDC, tokenless).
 #
-# No long-lived npm token. The workflow's OIDC id-token authenticates directly to
-# npm as a verified CI publisher (exempt from per-publish 2FA/OTP), and provenance
-# is attached automatically. This is npm's recommended path (token publish is
-# deprecated, ends Jan 2027) and removes the NPM_TOKEN secret entirely.
+# No long-lived npm token, for ANY package in this monorepo. The workflow's OIDC
+# id-token authenticates directly to npm as a verified CI publisher (exempt from
+# per-publish 2FA/OTP), and provenance is attached automatically. This is npm's
+# recommended path (token publish is deprecated, ends Jan 2027) and removes the
+# NPM_TOKEN secret entirely — for @jummon/auth AND the two newer workspace
+# packages (@jummon/auth-react-native, @jummon/s2s) alike. A local `npm publish`
+# is expected to fail by design (no OIDC id-token outside this workflow's runner).
 #
-# GATE: runs ONLY when a human cuts a GitHub Release. The Release is the approval.
+# GATE: runs ONLY when a human cuts a GitHub Release. The Release is the approval
+# — this workflow itself never decides to publish on its own (no push/schedule
+# trigger). Filename stays `publish.yml` — DO NOT rename this file; npm's Trusted
+# Publisher config below is pinned to it by exact filename.
 #
-# ONE-TIME npm-side setup (founder-gated) — configure the Trusted Publisher on the
-# package so npm trusts this exact workflow:
-#   npmjs.com → @jummon/auth → Settings → "Trusted Publisher" → GitHub Actions →
+# Which package gets published is resolved from the RELEASE TAG, not from which
+# files changed — one release = one package, same "one tag, one publish" model
+# `@jummon/auth` already used pre-monorepo, extended with a prefix per new
+# package so their tags don't collide with the root package's:
+#   v0.4.0                      → @jummon/auth              (repo root)
+#   auth-react-native-v0.1.0    → @jummon/auth-react-native  (packages/react-native)
+#   s2s-v0.1.0                  → @jummon/s2s                (packages/s2s)
+#
+# ONE-TIME npm-side setup (founder-gated), per package — configure the Trusted
+# Publisher so npm trusts this exact workflow for EACH package name:
+#   npmjs.com → <package> → Settings → "Trusted Publisher" → GitHub Actions →
 #     Organization/owner: jummon-one
 #     Repository:         jummon-auth-sdk
 #     Workflow filename:  publish.yml
 #     Environment:        (leave blank)
-#   Until this is configured, publish will fail with an auth error — that is expected.
-name: Publish @jummon/auth
+#   @jummon/auth already has this configured (pre-monorepo). @jummon/auth-react-native
+#   and @jummon/s2s need the SAME one-time setup before their first release-triggered
+#   publish — until then, publish fails with an auth error, which is expected (not a
+#   bug in this workflow).
+name: Publish packages
 
 on:
   release:
@@ -23,10 +40,44 @@ on:
 
 permissions:
   contents: read
-  id-token: write   # OIDC → npm trusted-publisher auth + provenance
+  id-token: write # OIDC → npm trusted-publisher auth + provenance
 
 jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      package_dir: ${{ steps.resolve.outputs.package_dir }}
+      package_name: ${{ steps.resolve.outputs.package_name }}
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - id: resolve
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          case "$TAG" in
+            auth-react-native-v*)
+              echo "package_dir=packages/react-native" >> "$GITHUB_OUTPUT"
+              echo "package_name=@jummon/auth-react-native" >> "$GITHUB_OUTPUT"
+              echo "version=${TAG#auth-react-native-v}" >> "$GITHUB_OUTPUT"
+              ;;
+            s2s-v*)
+              echo "package_dir=packages/s2s" >> "$GITHUB_OUTPUT"
+              echo "package_name=@jummon/s2s" >> "$GITHUB_OUTPUT"
+              echo "version=${TAG#s2s-v}" >> "$GITHUB_OUTPUT"
+              ;;
+            v*)
+              echo "package_dir=." >> "$GITHUB_OUTPUT"
+              echo "package_name=@jummon/auth" >> "$GITHUB_OUTPUT"
+              echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::error::Unrecognized release tag '$TAG' — expected v* (@jummon/auth), auth-react-native-v* or s2s-v*."
+              exit 1
+              ;;
+          esac
+
   publish:
+    needs: resolve
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -42,24 +93,27 @@ jobs:
       - name: Upgrade npm to 11.x (OIDC trusted publishing needs >= 11.5.1; npm 12 requires Node 22+, runner is Node 20)
         run: npm install -g npm@11
 
-      - name: Install (clean, lockfile-pinned)
+      - name: Install workspace (clean, lockfile-pinned — resolves ALL packages, not just the one being published)
         run: npm ci
 
-      - name: Typecheck + build (must be green before publish)
+      - name: Typecheck + build the package being published (must be green before publish)
+        working-directory: ${{ needs.resolve.outputs.package_dir }}
         run: |
           npm run typecheck
           npm run build
 
-      - name: Guard — release tag must match package version
+      - name: Guard — release tag's version must match this package's package.json version
+        working-directory: ${{ needs.resolve.outputs.package_dir }}
         run: |
           pkg=$(node -p "require('./package.json').version")
-          tag="${GITHUB_REF_NAME#v}"
-          if [ "$pkg" != "$tag" ]; then
-            echo "release tag ($tag) != package.json version ($pkg) — bump package.json first"; exit 1
+          if [ "$pkg" != "${{ needs.resolve.outputs.version }}" ]; then
+            echo "::error::release tag version (${{ needs.resolve.outputs.version }}) != ${{ needs.resolve.outputs.package_name }}'s package.json version ($pkg) — bump package.json first"
+            exit 1
           fi
-          echo "publishing @jummon/auth@$pkg"
+          echo "publishing ${{ needs.resolve.outputs.package_name }}@$pkg"
 
       - name: Publish to npm (trusted publishing + provenance)
+        working-directory: ${{ needs.resolve.outputs.package_dir }}
         run: npm publish --provenance --access public
         # No NODE_AUTH_TOKEN — auth comes from the OIDC id-token via the configured
-        # Trusted Publisher (owner jummon-one, repo jummon-auth-sdk, workflow publish.yml).
+        # Trusted Publisher for whichever package this release resolved to.

@@ -1,4 +1,11 @@
 # CI — keep main green and validate every PR before it can be released.
+#
+# Monorepo (npm workspaces, `packages/*`): one `npm ci` at the root resolves
+# every workspace package (@jummon/auth-react-native, @jummon/s2s, plus the
+# root @jummon/auth itself). `--workspaces --if-present` runs each package's
+# own typecheck/test/build in addition to the root's, so a break in a
+# workspace package fails CI the same way a root break does — no package is
+# "outside" this gate just because it lives under `packages/`.
 name: CI
 
 on:
@@ -19,6 +26,15 @@ jobs:
           node-version: "20"
       - run: npm ci
       - run: npm run typecheck
+      - run: npm test
       - run: npm run build
-      - name: Package contents sanity (dry-run)
-        run: npm pack --dry-run
+      - name: Workspace packages — typecheck
+        run: npm run typecheck --workspaces --if-present
+      - name: Workspace packages — test
+        run: npm test --workspaces --if-present
+      - name: Workspace packages — build
+        run: npm run build --workspaces --if-present
+      - name: Package contents sanity (dry-run, every publishable package)
+        run: |
+          npm pack --dry-run
+          npm pack --dry-run --workspaces

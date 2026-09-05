@@ -1,14 +1,11 @@
 {
-  "name": "@jummon/auth",
-  "version": "0.4.0",
-  "description": "Official Jummon browser auth SDK for customer apps: OIDC authorization-code + PKCE (redirect flow), silent refresh, headless in-app login (mode: \"headless\"), and a headless-aware React binding.",
+  "name": "@jummon/auth-react-native",
+  "version": "0.1.0",
+  "description": "React Native / Expo adapters for @jummon/auth's agnostic core: AsyncStorage+SecureStore storage, expo-crypto PKCE, Linking-based social-login navigation, and react-native-passkey WebAuthn. Headless-only (mode: \"headless\") — no hosted-redirect mode on RN.",
   "license": "MIT",
   "author": "Jummon",
   "type": "module",
   "sideEffects": false,
-  "workspaces": [
-    "packages/*"
-  ],
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -23,33 +20,11 @@
         "default": "./dist/index.cjs"
       }
     },
-    "./react": {
-      "import": {
-        "types": "./dist/react.d.ts",
-        "default": "./dist/react.js"
-      },
-      "require": {
-        "types": "./dist/react.d.cts",
-        "default": "./dist/react.cjs"
-      }
-    },
-    "./core": {
-      "import": {
-        "types": "./dist/core.d.ts",
-        "default": "./dist/core.js"
-      },
-      "require": {
-        "types": "./dist/core.d.cts",
-        "default": "./dist/core.cjs"
-      }
-    },
     "./package.json": "./package.json"
   },
   "files": [
     "dist",
-    "README.md",
-    "MIGRATION-from-popup.md",
-    "ROADMAP.md"
+    "README.md"
   ],
   "scripts": {
     "build": "tsup",
@@ -61,23 +36,38 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "oidc-client-ts": "^3.5.0"
+    "@jummon/auth": "file:../.."
   },
   "peerDependencies": {
-    "react": ">=18"
+    "react-native": ">=0.70",
+    "@react-native-async-storage/async-storage": ">=1.19",
+    "expo-secure-store": ">=13",
+    "expo-crypto": ">=13",
+    "expo-linking": ">=6",
+    "react-native-passkey": ">=3"
   },
   "peerDependenciesMeta": {
-    "react": {
+    "react-native": {
+      "optional": true
+    },
+    "@react-native-async-storage/async-storage": {
+      "optional": true
+    },
+    "expo-secure-store": {
+      "optional": true
+    },
+    "expo-crypto": {
+      "optional": true
+    },
+    "expo-linking": {
+      "optional": true
+    },
+    "react-native-passkey": {
       "optional": true
     }
   },
   "devDependencies": {
-    "@testing-library/react": "^16.3.3",
-    "@types/node": "^26.4.1",
-    "@types/react": "^18.3.0",
-    "jsdom": "^25.0.1",
-    "react": "^18.3.0",
-    "react-dom": "^18.3.1",
+    "@types/node": "^22.10.0",
     "tsup": "^8.3.5",
     "typescript": "^5.6.3",
     "vitest": "^3.2.7"
@@ -92,7 +82,8 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/jummon-one/jummon-auth-sdk.git"
+    "url": "git+https://github.com/jummon-one/jummon-auth-sdk.git",
+    "directory": "packages/react-native"
   },
   "keywords": [
     "jummon",
@@ -100,6 +91,8 @@
     "authentication",
     "auth",
     "pkce",
-    "sso"
+    "react-native",
+    "expo",
+    "passkey"
   ]
 }

@@ -1,0 +1,66 @@
+{
+  "name": "@jummon/s2s",
+  "version": "0.1.0",
+  "description": "Server-side helper for Jummon service-account integrations: private_key_jwt token minting (cache/refresh, fail-closed) + thin catalog-api wrappers (createUser, invite, setPassword) with correct field names baked in.",
+  "license": "MIT",
+  "author": "Jummon",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist",
+    "prepare": "tsup",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsup": "^8.3.5",
+    "typescript": "^5.6.3",
+    "vitest": "^3.2.7"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/",
+    "provenance": true
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jummon-one/jummon-auth-sdk.git",
+    "directory": "packages/s2s"
+  },
+  "keywords": [
+    "jummon",
+    "oidc",
+    "service-account",
+    "private_key_jwt",
+    "s2s",
+    "client-credentials"
+  ]
+}
