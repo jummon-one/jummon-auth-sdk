@@ -68,6 +68,7 @@ function makeFakeFlow(): HeadlessAuthFlow {
     submitMfaCode: vi.fn().mockResolvedValue(snapshot),
     confirmMfaSetup: vi.fn().mockResolvedValue(snapshot),
     submitTermsAgreement: vi.fn().mockResolvedValue(snapshot),
+    submitDeviceConsent: vi.fn().mockResolvedValue(snapshot),
     submitRequiredAction: vi.fn().mockResolvedValue(snapshot),
     poll: vi.fn().mockResolvedValue(snapshot),
     resume: vi.fn().mockResolvedValue(snapshot),
@@ -237,6 +238,11 @@ describe("useHeadlessAuthFlow", () => {
       await result.current.submitTermsAgreement(true, { consentAccepted: true, termsVersion: "v1" });
     });
     expect(flow.submitTermsAgreement).toHaveBeenCalledWith(true, { consentAccepted: true, termsVersion: "v1" });
+
+    await act(async () => {
+      await result.current.submitDeviceConsent(true);
+    });
+    expect(flow.submitDeviceConsent).toHaveBeenCalledWith(true);
   });
 
   it("disposes the flow on unmount", async () => {

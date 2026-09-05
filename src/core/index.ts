@@ -35,6 +35,7 @@ export type {
 } from "./platform/types";
 export { generateOpaqueId, generatePkcePair, type PkcePair } from "./platform/pkce";
 export {
+  buildDeviceConsentSubmit,
   buildTermsAgreementSubmit,
   type CreatePasswordStepData,
   type CreatePasswordSubmit,

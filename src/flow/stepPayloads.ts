@@ -107,31 +107,36 @@ export interface ValidatePhoneStepData {
 }
 
 /**
- * `device-consent-form` (OIDC device-code consent, `device_consent.go:84-117`)
- * — TYPE ONLY, deliberately NOT wired to a dedicated method or to
- * `submitRequiredAction()`'s normal JSON-body path. The backend route this
- * step's submit reuses (`jummon-login-interface`'s
- * `services-auth.ts:354-357`) reads `consent_accepted` off
- * `request.query.accepted` — the QUERY STRING — for this one ref only,
- * ignoring the JSON body entirely even if it's well-formed. That is a
- * backend bug (tracked as item B4 in
+ * `device-consent-form` (OIDC device-code consent, `device_consent.go:84-117`).
+ *
+ * Previously TYPE-ONLY: the backend route this step's submit reuses
+ * (`jummon-login-interface`'s `services-auth.ts:354-357`) used to read
+ * `consent_accepted` off `request.query.accepted` — the QUERY STRING — for
+ * this one ref only, ignoring the JSON body even if well-formed (item B4,
  * `engineering-team/initiatives/headless-embeddable-auth/
- * SDK-DEFINITIVE-REVIEW-SYNTHESIS-2026-09-05.md`, owned by back-end, not
- * this SDK), so this type exists for documentation/typing only — encoding a
- * client-side workaround for it here would bake a backend quirk into the
- * public API surface right before the fix lands, and silently stop working
- * (or double-submit) the moment the backend route is corrected to read the
- * body like every other step. Once B4 ships, `submitRequiredAction("device-consent-form",
- * payload)` will work like every other ref and this type becomes a normal
- * typed submit builder — no SDK change needed on that day besides adding
- * the builder.
+ * SDK-DEFINITIVE-REVIEW-SYNTHESIS-2026-09-05.md`). **B4 shipped**
+ * (`jummon-login-interface` commit `a7487e0`): the route now reads
+ * `consent_accepted` from the JSON body first, falling back to the query
+ * string only for backward compatibility — the SDK sends body-only, like
+ * every other required-action step, via `buildDeviceConsentSubmit()`/
+ * `HeadlessAuthFlow.submitDeviceConsent()` below.
  */
-export interface DeviceConsentSubmit {
+export type DeviceConsentSubmit = {
   consent_accepted: "true" | "false";
-}
+};
 export interface DeviceConsentStepData {
   client_name: string;
   scopes: Array<{ name: string; description?: string; id: string; claim_mapper?: string; restricted?: boolean }>;
+}
+
+/**
+ * Builds the `submitRequiredAction("device-consent-form", ...)` body from a
+ * boolean, applying the string-not-boolean wire quirk (this file's top doc
+ * comment) — same shape/rationale as `buildTermsAgreementSubmit()`, minus
+ * the LGPD consent-gating (this step has no separate consent field).
+ */
+export function buildDeviceConsentSubmit(accepted: boolean): DeviceConsentSubmit {
+  return { consent_accepted: accepted ? "true" : "false" };
 }
 
 /**

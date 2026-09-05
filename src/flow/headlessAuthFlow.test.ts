@@ -593,6 +593,35 @@ describe("HeadlessAuthFlow", () => {
     expect(transportMock.submit).not.toHaveBeenCalled();
   });
 
+  // --- submitDeviceConsent(): device-consent-form, body-only now that B4 shipped ---
+
+  it("submitDeviceConsent(true) sends { consent_accepted: \"true\" } in the JSON body — never the query string (B4 fixed)", async () => {
+    transportMock.start.mockResolvedValue(envelope({ current_step: { ref: "device-consent-form" } }));
+    transportMock.submit.mockResolvedValue(
+      envelope({ status: "authenticated", current_step: null, code: "auth-code", oidc_state: "s", data: {} }),
+    );
+    vi.mocked(exchangeAuthorizationCode).mockResolvedValue({ access_token: "at", token_type: "Bearer" });
+    const flow = createHeadlessAuthFlow(OPTIONS, sink);
+    await flow.start();
+
+    await flow.submitDeviceConsent(true);
+
+    expect(transportMock.submit).toHaveBeenCalledWith("ft-1", { consent_accepted: "true" });
+  });
+
+  it("submitDeviceConsent(false) sends { consent_accepted: \"false\" } (string, never a native JSON boolean)", async () => {
+    transportMock.start.mockResolvedValue(envelope({ current_step: { ref: "device-consent-form" } }));
+    transportMock.submit.mockResolvedValue(envelope({ current_step: { ref: "device-consent-form" } }));
+    const flow = createHeadlessAuthFlow(OPTIONS, sink);
+    await flow.start();
+
+    await flow.submitDeviceConsent(false);
+
+    const [, body] = transportMock.submit.mock.calls[0] as [string, Record<string, unknown>];
+    expect(body).toEqual({ consent_accepted: "false" });
+    expect(typeof body.consent_accepted).toBe("string");
+  });
+
   // --- setPassword(): create-password-form's wire fields ---------------------
 
   it("setPassword() sends { password, confirmation_password } on the wire, and derives needs_password", async () => {

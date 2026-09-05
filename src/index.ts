@@ -21,6 +21,7 @@ export type {
 } from "./flow/types";
 
 export {
+  buildDeviceConsentSubmit,
   buildTermsAgreementSubmit,
   type CreatePasswordStepData,
   type CreatePasswordSubmit,

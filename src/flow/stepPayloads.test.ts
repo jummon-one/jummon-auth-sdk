@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildTermsAgreementSubmit } from "./stepPayloads";
+import { buildDeviceConsentSubmit, buildTermsAgreementSubmit } from "./stepPayloads";
 
 describe("buildTermsAgreementSubmit", () => {
   it("accepted=false needs no other argument and sends only terms_agreed", () => {
@@ -40,5 +40,17 @@ describe("buildTermsAgreementSubmit", () => {
     const result = buildTermsAgreementSubmit(true, { consentAccepted: true, termsVersion: "v1" });
     expect(typeof result.terms_agreed).toBe("string");
     expect(typeof (result as { consent_accepted: string }).consent_accepted).toBe("string");
+  });
+});
+
+describe("buildDeviceConsentSubmit", () => {
+  it("accepted=true sends consent_accepted: \"true\" (string, not a native JSON boolean)", () => {
+    const result = buildDeviceConsentSubmit(true);
+    expect(result).toEqual({ consent_accepted: "true" });
+    expect(typeof result.consent_accepted).toBe("string");
+  });
+
+  it("accepted=false sends consent_accepted: \"false\"", () => {
+    expect(buildDeviceConsentSubmit(false)).toEqual({ consent_accepted: "false" });
   });
 });

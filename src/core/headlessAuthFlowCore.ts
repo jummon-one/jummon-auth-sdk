@@ -14,7 +14,7 @@ import {
   encodeAssertionForWire,
   encodeAttestationForWire,
 } from "../flow/webauthn";
-import { buildTermsAgreementSubmit } from "../flow/stepPayloads";
+import { buildDeviceConsentSubmit, buildTermsAgreementSubmit } from "../flow/stepPayloads";
 
 const DEFAULT_SCOPES = ["openid", "profile", "email", "offline_access"];
 
@@ -126,6 +126,17 @@ export interface HeadlessAuthFlow {
     accepted: boolean,
     opts?: { consentAccepted?: boolean; termsVersion?: string },
   ): Promise<HeadlessFlowSnapshot>;
+  /**
+   * Answers the `device-consent-form` required-action step (OIDC
+   * device-code consent, `jummon-auth-engine`'s `device_consent.go`) — thin
+   * wrapper over `submitRequiredAction("device-consent-form", ...)` that
+   * applies `../flow/stepPayloads.ts`'s `buildDeviceConsentSubmit()` (the
+   * string-not-boolean wire quirk). Sends `consent_accepted` in the JSON
+   * body like every other step — the backend used to read this one ref's
+   * `consent_accepted` from the query string only (item B4), now fixed
+   * (body-first, query fallback).
+   */
+  submitDeviceConsent(accepted: boolean): Promise<HeadlessFlowSnapshot>;
   /** Generic escape hatch for any required-action step ref (`verify-email-form`, `validate-phone-form`, …) so a new ref doesn't need an SDK major version — see `../flow/stepPayloads.ts` for the typed shape of the refs known today. */
   submitRequiredAction(ref: string, data: Record<string, unknown>): Promise<HeadlessFlowSnapshot>;
   /** Re-fetches the current server-side state by flow_token. */
@@ -334,6 +345,11 @@ export class HeadlessAuthFlowCore implements HeadlessAuthFlow {
     opts?: { consentAccepted?: boolean; termsVersion?: string },
   ): Promise<HeadlessFlowSnapshot> {
     return this.submit(buildTermsAgreementSubmit(accepted, opts));
+  }
+
+  /** `device-consent-form` — see `HeadlessAuthFlow.submitDeviceConsent`'s doc comment. */
+  submitDeviceConsent(accepted: boolean): Promise<HeadlessFlowSnapshot> {
+    return this.submit(buildDeviceConsentSubmit(accepted));
   }
 
   submitRequiredAction(ref: string, data: Record<string, unknown>): Promise<HeadlessFlowSnapshot> {

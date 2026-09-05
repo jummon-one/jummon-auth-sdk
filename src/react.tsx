@@ -174,6 +174,7 @@ export interface UseHeadlessAuthFlowResult {
     accepted: boolean,
     opts?: { consentAccepted?: boolean; termsVersion?: string },
   ) => Promise<HeadlessFlowSnapshot>;
+  submitDeviceConsent: (accepted: boolean) => Promise<HeadlessFlowSnapshot>;
   submitRequiredAction: (ref: string, data: Record<string, unknown>) => Promise<HeadlessFlowSnapshot>;
 }
 
@@ -218,6 +219,7 @@ export function useHeadlessAuthFlow(): UseHeadlessAuthFlowResult {
       submitMfaCode: (code) => getFlow().submitMfaCode(code),
       confirmMfaSetup: (code) => getFlow().confirmMfaSetup(code),
       submitTermsAgreement: (accepted, opts) => getFlow().submitTermsAgreement(accepted, opts),
+      submitDeviceConsent: (accepted) => getFlow().submitDeviceConsent(accepted),
       submitRequiredAction: (ref, data) => getFlow().submitRequiredAction(ref, data),
     }),
     [snapshot, getFlow],
