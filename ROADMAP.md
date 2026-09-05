@@ -395,16 +395,32 @@ Shared by web and React Native — this lives in the agnostic core, not a
 platform adapter, so `@jummon/auth-react-native`'s `signOut()` gets the same
 fix with zero RN-specific code.
 
-**Known remaining gap, not in scope for this pass:** `RedirectEngine`
+**CLOSED (item #9, founder-gate follow-up):** `RedirectEngine`
 (`mode: "redirect"`, wraps `oidc-client-ts`)'s own `signOut({redirect:
-false})` fast path (`userManager.removeUser()`) also does not revoke — it
-only clears local storage. This wasn't touched because the fix was scoped
-to "the core signOut path... adapter-agnostic" and `RedirectEngine` is
-explicitly NOT part of the agnostic core (see "Why the API is stable across
-this boundary" above). Worth a follow-up if the redirect-mode gap turns out
-to matter in practice (oidc-client-ts's `UserManagerSettings` has its own
-`revokeTokensOnSignout` option that could cover it without hand-rolling a
-second `revokeToken()` call site).
+false})` fast path used to skip revocation entirely (only
+`userManager.removeUser()`, local storage only) — this was the one
+`signOut` path the original fix didn't cover, since it was scoped to "the
+core signOut path... adapter-agnostic" and `RedirectEngine` is explicitly
+NOT part of the agnostic core. Now fixed directly in
+`src/engines/redirectEngine.ts`: reads the stored `refresh_token` via
+`UserManager.getUser()` before `removeUser()` clears it, revokes via the
+same `revokeToken()` helper `HeadlessEngineCore` uses (best-effort,
+try/catch-wrapped, never blocks/fails signOut), then proceeds unchanged.
+The default (`redirect: true`) hosted end-session path is untouched — it
+already invalidates the IdP session server-side via the
+`end_session_endpoint` redirect itself. 5 new tests in the new
+`src/engines/redirectEngine.test.ts` (revoke called with the
+refresh_token, no session ⇒ no revoke call, signOut still completes when
+revoke rejects, no token value ever logged, default redirect:true path
+untouched/never calls revoke).
+
+**Disclosed residual risk (item D1):** revocation is best-effort by
+design — a signOut whose revoke call fails (offline device,
+`revocation_endpoint` down) leaves that `refresh_token` valid server-side
+for its normal TTL. Documented in the README right under this section as
+an explicit, registered trade-off (same disclosure posture as the
+`sessionStorage`-default exception) rather than an implicit gap behind the
+"closes P1" claim.
 
 ### #85 client risk-signal collector (SHIPPED — dev-ready, flag-OFF by default)
 
@@ -464,6 +480,79 @@ CHANGES after `HeadlessEngine.signOut()`, 5 in
 `packages/react-native/src/adapters/riskSignals.test.ts` + 2 in that
 package's `adapters/index.test.ts` (mocked natives, no RN runtime).
 
+### RN launch blockers — founder's final gate (SHIPPED)
+
+Four blockers the founder's gate found before clearing `@jummon/auth-react-native`
+for a real launch, all fixed in this pass:
+
+- **B1 — `atob`/`btoa`/`Buffer` leak in the core (CRITICAL).**
+  `src/internal/base64url.ts` used `atob`/`btoa` with a `Buffer.from(...)`
+  fallback — none of which are Hermes/RN globals — and it was reached on
+  EVERY RN operation via PKCE generation (`core/platform/pkce.ts`, every
+  `start()`), WebAuthn encoding (`flow/webauthn.ts`), and JWT decode
+  (`jwt.ts`, `HeadlessEngineCore.mapSession()` on every `getUser()`). On
+  stock Expo this threw `ReferenceError: Buffer is not defined` and left
+  the flow permanently stuck at `status: "error"`. Fixed by moving the RN
+  team's already-correct dependency-free bit-manipulation codec (previously
+  vendored separately at `packages/react-native/src/internal/base64.ts`)
+  into the shared `src/internal/base64.ts` — now THE one codec, re-exported
+  from `@jummon/auth/core` so the RN package's own `adapters/webauthn.ts`
+  imports the identical implementation instead of a second copy. The old
+  `base64url.ts` (and the RN package's duplicate `internal/base64.ts`) are
+  deleted — there is exactly one base64/base64url implementation in the
+  entire monorepo now.
+- **B4 — the test gap that hid B1.** RN's vitest config runs under
+  `environment: "node"` (Node has had `atob`/`btoa`/`Buffer` since v16), and
+  no existing test drove a real `.start()`/`.startPasskeyLogin()` end to
+  end — so the broken path never executed in CI. New regression test,
+  `packages/react-native/src/regression.b1-no-atob-btoa-buffer.test.ts`:
+  deletes `atob`/`btoa`/`Buffer` from `globalThis` (simulating Hermes) and
+  drives a REAL `createJummonAuthReactNative()` flow —
+  `start()` → `submitPassword()` → `authenticated` → `getUser()` — asserting
+  no `ReferenceError` and correct decoded JWT claims. Verified this test
+  FAILS with `ReferenceError: Buffer is not defined` against the pre-B1
+  codec and PASSES after the fix (checked by hand during this pass, not
+  just asserted).
+- **B2 — Metro package-exports fallback.** `@jummon/auth/core` and `/react`
+  resolved ONLY via the `exports` map; Metro only honors that map with
+  `unstable_enablePackageExports` enabled, which isn't default across the
+  declared `react-native >=0.70` peer range. Fixed with root-level static
+  proxy files — `core.js`/`core.d.ts`/`react.js`/`react.d.ts` at the
+  `@jummon/auth` package root, each a one-line `export * from "./dist/..."`
+  — so Metro's pre-`exports` resolution (`<package>/<subpath>.js`, ignoring
+  `package.json` for subpaths entirely) finds them regardless of the
+  Metro/RN version. Added to `package.json`'s `files` array so they ship;
+  `tsup`'s `clean: true` only wipes `dist/`, so these survive every build.
+- **B3 — the `file:../..` dev-only dependency shipped in the tarball.**
+  `packages/react-native/package.json` had `"@jummon/auth": "file:../.."`
+  — npm workspaces does NOT rewrite that specifier at publish time, so
+  `npm install @jummon/auth-react-native` would fail for every external
+  user (their filesystem has no `../..` relative to their own
+  `node_modules`). Changed to `"^0.4.0"` — npm workspaces still symlinks
+  the local copy when the range is satisfied (confirmed:
+  `node_modules/@jummon/auth` stayed a symlink to the repo root after
+  `npm install`). New `packages/react-native/scripts/verify-no-file-deps.cjs`,
+  wired as this package's `prepack` script (runs automatically before
+  `npm pack`/`npm publish`), fails the pack if ANY dependency/
+  devDependency/peerDependency has a `file:` specifier.
+
+**B3 verification (real `npm pack`, not `--dry-run`):** packed BOTH
+`@jummon/auth@0.4.0` and `@jummon/auth-react-native@0.1.0` to real
+`.tgz` files, extracted the RN tarball and confirmed
+`package.json`'s `dependencies["@jummon/auth"]` is `"^0.4.0"` (no `file:`
+anywhere), then — critically — `npm install`ed BOTH tarballs by path into a
+throwaway, non-workspace scratch project (no symlinking, no workspace
+context at all — exactly an external user's install). It succeeded
+cleanly; `@jummon/auth-react-native` landed as a real directory (not a
+broken symlink), `require("@jummon/auth-react-native")` worked, and the B2
+proxy files (`core.js`/`react.js`) were present and load-bearing —
+`require("@jummon/auth/core.js")` and (after installing the `react` peer)
+`require("@jummon/auth/react.js")` both resolved and exposed the expected
+exports (`HeadlessEngineCore`, `JummonAuthProvider`, `useHeadlessAuthFlow`).
+Also re-verified the `verify-no-file-deps.cjs` guard actually blocks a
+regression: temporarily reintroduced `file:../..`, confirmed the script
+exits non-zero with a clear message, then restored the fix.
+
 ## Follow-ups filed, not built in this pass
 
 - **Typed submit builders for `verify-email-form`/`validate-phone-form`** —
@@ -479,7 +568,3 @@ package's `adapters/index.test.ts` (mocked natives, no RN runtime).
   section for the exact steps; `@jummon/auth-react-native`/`@jummon/s2s`'s
   first release-triggered publish will fail with an auth error until it's
   done — expected, not a regression.
-- **`RedirectEngine`'s own `signOut({redirect:false})` doesn't revoke** —
-  see "signOut() token revocation (P1, SHIPPED)" above; out of scope for
-  this pass (redirect mode isn't part of the agnostic core), tracked here
-  so it isn't a silent gap.
