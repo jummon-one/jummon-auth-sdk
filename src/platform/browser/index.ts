@@ -5,6 +5,7 @@ import { createBrowserStorage } from "./storage";
 import { browserCrypto } from "./crypto";
 import { browserNavigation } from "./navigation";
 import { browserWebAuthn } from "./webauthn";
+import { browserRiskSignals } from "./riskSignals";
 
 /**
  * Default adapter bag for the WEB package (`@jummon/auth`'s
@@ -32,7 +33,8 @@ export function createBrowserPlatformAdapters(options: JummonAuthOptions): Platf
     crypto: browserCrypto,
     navigation: browserNavigation,
     webauthn: browserWebAuthn,
+    riskSignals: browserRiskSignals,
   };
 }
 
-export { browserCrypto, browserNavigation, browserWebAuthn, createBrowserStorage };
+export { browserCrypto, browserNavigation, browserRiskSignals, browserWebAuthn, createBrowserStorage };

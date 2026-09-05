@@ -36,6 +36,16 @@ export interface StoredHeadlessFlow {
   redirectUri: string;
   issuerHost: string;
   savedAt: number;
+  /**
+   * `Date.now()` at the ORIGINAL `start()` call — distinct from `savedAt`
+   * above, which is refreshed every time this record is re-persisted
+   * (including right before a social-provider redirect, well after the
+   * flow actually started). Restored by `resume()` so `client_signal.flow_ms`
+   * (#85, risk-signal-collector) still measures elapsed-since-start
+   * correctly across a social-redirect round trip, not elapsed-since-the-
+   * last-persist.
+   */
+  flowStartedAt: number;
 }
 
 /** Namespaced per tenant+clientId so multiple flows on one origin don't collide. */

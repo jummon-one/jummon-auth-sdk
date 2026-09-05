@@ -105,6 +105,36 @@ export interface PlatformWebAuthn {
   get(options: PublicKeyCredentialRequestOptions): Promise<PublicKeyCredential | null>;
 }
 
+/**
+ * Client risk-signal collection (initiative #85,
+ * `engineering-team/initiatives/risk-signal-collector/README.md`) —
+ * deliberately OPTIONAL on `PlatformAdapters` (`riskSignals?:`) and
+ * deliberately NARROW: this is the ENTIRE platform-specific surface the
+ * collector needs, three synchronous, coarse, allowlisted lookups. Every
+ * other allowlisted key (`device_id`, `flow_ms`, `schema`) is computed by
+ * the agnostic core itself (`../deviceId.ts`, `../headlessAuthFlowCore.ts`)
+ * and needs no platform adapter at all.
+ *
+ * The allowlist in the spec above is a HARD constraint, not a suggestion —
+ * this interface exists to make it structurally impossible to accidentally
+ * collect anything off it: there is no method here that could return a
+ * canvas/WebGL/audio/font fingerprint, a keystroke/mouse biometric, an IP
+ * address, or precise geolocation, because none of those has a method. Omit
+ * this adapter entirely on a platform with no implementation yet — the
+ * collector (`HeadlessAuthFlowCore`'s `buildRiskSignals()`) degrades to
+ * sending `device_id`/`flow_ms`/`schema` only, never a crash, and ONLY when
+ * the app opts in via `JummonAuthOptions.collectRiskSignals: true` in the
+ * first place (default OFF — no adapter call happens at all otherwise).
+ */
+export interface PlatformRiskSignals {
+  /** Coarse IANA timezone (e.g. `"America/Sao_Paulo"`) — a locale setting, never a coordinate/precise-geolocation lookup. `null` if unavailable. */
+  getTimezone(): string | null;
+  /** Primary language tag (e.g. `"pt-BR"`). `null` if unavailable. */
+  getLanguage(): string | null;
+  /** Coarse device class only — UA-Client-Hints-level granularity, never a full User-Agent string or any fingerprint-grade signal. `null` if undeterminable. */
+  getDeviceClass(): "mobile" | "tablet" | "desktop" | null;
+}
+
 /** The full adapter bag the agnostic core is constructed with. */
 export interface PlatformAdapters {
   storage: PlatformStorage;
@@ -112,4 +142,6 @@ export interface PlatformAdapters {
   navigation: PlatformNavigation;
   /** Omit (or supply `{ isSupported: () => false, ... }`) on a platform with no passkey story yet — see `PlatformWebAuthn`'s doc comment. */
   webauthn?: PlatformWebAuthn;
+  /** Omit on a platform with no risk-signal implementation yet — see `PlatformRiskSignals`'s doc comment. Independent of `collectRiskSignals`: the option gates whether the collector runs at all, this adapter only supplies the platform-specific fields once it does. */
+  riskSignals?: PlatformRiskSignals;
 }

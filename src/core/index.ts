@@ -25,11 +25,13 @@ export {
   type HeadlessSessionSink,
 } from "./headlessAuthFlowCore";
 export { HEADLESS_FLOW_STORAGE_PREFIX } from "./flowPersistence";
+export { DEVICE_ID_STORAGE_PREFIX, getOrCreateDeviceId, rotateDeviceId } from "./deviceId";
 
 export type {
   PlatformAdapters,
   PlatformCrypto,
   PlatformNavigation,
+  PlatformRiskSignals,
   PlatformStorage,
   PlatformWebAuthn,
 } from "./platform/types";

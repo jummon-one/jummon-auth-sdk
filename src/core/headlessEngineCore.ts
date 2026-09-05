@@ -1,5 +1,6 @@
 import { DEFAULT_ISSUER_HOST } from "../discovery";
 import { JummonAuthError, toJummonAuthError } from "../errors";
+import { rotateDeviceId } from "./deviceId";
 import { AuthStateEmitter } from "../internal/authStateEmitter";
 import { fetchDiscoveryDocument, refreshAccessToken, revokeToken, type TokenResponse } from "../internal/tokenExchange";
 import { decodeJwtPayload } from "../jwt";
@@ -90,6 +91,12 @@ export class HeadlessEngineCore implements AuthEngine {
     if (session) {
       await this.revokeStolenableTokens(session);
     }
+    // Device-id rotation (#85, risk-signal-collector spec's allowlist:
+    // "device_id ... rotated on logout") — runs unconditionally, even with
+    // no active session, same as revocation above. Best-effort by design
+    // (`rotateDeviceId()`'s own doc comment); a failure here must never
+    // block signOut either.
+    await rotateDeviceId(this.adapters.storage, this.tenant, this.clientId);
     this.clear();
     this.emitter.emit({ status: "unauthenticated" });
     if (opts?.redirect === false || !session) {

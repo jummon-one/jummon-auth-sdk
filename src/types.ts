@@ -99,6 +99,21 @@ export interface JummonAuthOptions {
    * there for the identical reason in reverse.
    */
   apiHost?: string;
+  /**
+   * Headless mode only. Opt-in client risk-signal collection (initiative
+   * #85 — `engineering-team/initiatives/risk-signal-collector/README.md`):
+   * a narrow, ALLOWLISTED set of coarse client signals
+   * (`device_id`/`tz`/`lang`/`device_class`/`flow_ms`/`schema`) attached as
+   * `risk_signals` on the submit-step body, as a non-authoritative
+   * corroborating hint for server-side identity-risk detection — never a
+   * replacement for a server-derived signal, never fingerprinting. Default:
+   * `false` — no collection happens and no `risk_signals` field is ever
+   * added to the body unless this is explicitly `true`. Even when `true`,
+   * only the allowlist above is ever collected; there is no way to widen it
+   * from the calling app (see `PlatformRiskSignals` in `@jummon/auth/core`
+   * for the full list of what's collected and why nothing else is).
+   */
+  collectRiskSignals?: boolean;
 }
 
 /** Result of `JummonAuthClient.registerPasskey()` — the newly-enrolled credential. */

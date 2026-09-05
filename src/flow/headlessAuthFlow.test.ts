@@ -622,6 +622,107 @@ describe("HeadlessAuthFlow", () => {
     expect(typeof body.consent_accepted).toBe("string");
   });
 
+  // --- #85 risk-signal-collector: risk_signals on the submit-step body -----
+
+  const RISK_SIGNAL_ALLOWLIST = ["device_id", "tz", "lang", "device_class", "flow_ms", "schema"];
+  // The full ban list from the spec — asserted by NAME so this test breaks
+  // loudly if any of these ever appear on a real fixture, not just by
+  // omission from the allowlist above.
+  const BANNED_KEYS = [
+    "canvas",
+    "webgl",
+    "audio_fingerprint",
+    "font_fingerprint",
+    "keystroke",
+    "mouse_movement",
+    "ip",
+    "client_ip",
+    "geo",
+    "geolocation",
+    "latitude",
+    "longitude",
+    "user_agent",
+    "ua",
+  ];
+
+  describe("risk_signals (#85, opt-in via collectRiskSignals)", () => {
+    it("collectRiskSignals absent (default) never attaches risk_signals to the submit body", async () => {
+      transportMock.start.mockResolvedValue(envelope());
+      transportMock.submit.mockResolvedValue(envelope({ current_step: { ref: "otp-input-form" } }));
+      const flow = createHeadlessAuthFlow(OPTIONS, sink); // no collectRiskSignals
+      await flow.start();
+
+      await flow.submitPassword("jane@example.com", "hunter2");
+
+      const [, body] = transportMock.submit.mock.calls[0] as [string, Record<string, unknown>];
+      expect(body).not.toHaveProperty("risk_signals");
+    });
+
+    it("collectRiskSignals: false explicitly never attaches risk_signals either", async () => {
+      transportMock.start.mockResolvedValue(envelope());
+      transportMock.submit.mockResolvedValue(envelope({ current_step: { ref: "otp-input-form" } }));
+      const flow = createHeadlessAuthFlow({ ...OPTIONS, collectRiskSignals: false }, sink);
+      await flow.start();
+
+      await flow.submitPassword("jane@example.com", "hunter2");
+
+      const [, body] = transportMock.submit.mock.calls[0] as [string, Record<string, unknown>];
+      expect(body).not.toHaveProperty("risk_signals");
+    });
+
+    it("collectRiskSignals: true attaches risk_signals with ONLY allowlisted keys — device_id/schema/flow_ms always, tz/lang/device_class when available", async () => {
+      transportMock.start.mockResolvedValue(envelope());
+      transportMock.submit.mockResolvedValue(envelope({ current_step: { ref: "otp-input-form" } }));
+      const flow = createHeadlessAuthFlow({ ...OPTIONS, collectRiskSignals: true }, sink);
+      await flow.start();
+
+      await flow.submitPassword("jane@example.com", "hunter2");
+
+      const [, body] = transportMock.submit.mock.calls[0] as [string, Record<string, unknown>];
+      expect(body).toHaveProperty("risk_signals");
+      const signals = body.risk_signals as Record<string, unknown>;
+
+      // Never anything off the allowlist — asserted both ways: every key
+      // present must be allowlisted, and none of the explicitly-banned
+      // keys ever appears.
+      for (const key of Object.keys(signals)) {
+        expect(RISK_SIGNAL_ALLOWLIST).toContain(key);
+      }
+      for (const banned of BANNED_KEYS) {
+        expect(signals).not.toHaveProperty(banned);
+      }
+
+      // Original submit fields are preserved alongside risk_signals — this
+      // is an addition to the body, never a replacement.
+      expect(body.username).toBe("jane@example.com");
+      expect(body.password).toBe("hunter2");
+
+      expect(signals.schema).toBe("v1");
+      expect(typeof signals.device_id).toBe("string");
+      expect(typeof signals.flow_ms).toBe("number");
+      expect(signals.flow_ms as number).toBeGreaterThanOrEqual(0);
+    });
+
+    it("device_id is stable across two submits in the same flow", async () => {
+      transportMock.start.mockResolvedValue(envelope());
+      transportMock.submit
+        .mockResolvedValueOnce(envelope({ current_step: { ref: "otp-input-form" } }))
+        .mockResolvedValueOnce(envelope({ current_step: { ref: "otp-input-form" } }));
+      const flow = createHeadlessAuthFlow({ ...OPTIONS, collectRiskSignals: true }, sink);
+      await flow.start();
+
+      await flow.submitPassword("jane@example.com", "hunter2");
+      await flow.submitMfaCode("123456");
+
+      const [, firstBody] = transportMock.submit.mock.calls[0] as [string, Record<string, unknown>];
+      const [, secondBody] = transportMock.submit.mock.calls[1] as [string, Record<string, unknown>];
+      const firstSignals = firstBody.risk_signals as Record<string, unknown>;
+      const secondSignals = secondBody.risk_signals as Record<string, unknown>;
+
+      expect(secondSignals.device_id).toBe(firstSignals.device_id);
+    });
+  });
+
   // --- setPassword(): create-password-form's wire fields ---------------------
 
   it("setPassword() sends { password, confirmation_password } on the wire, and derives needs_password", async () => {

@@ -2,6 +2,7 @@ import { DEFAULT_ISSUER_HOST } from "../discovery";
 import { JummonAuthError } from "../errors";
 import { exchangeAuthorizationCode } from "../internal/tokenExchange";
 import type { JummonAuthOptions, JummonUser } from "../types";
+import { getOrCreateDeviceId } from "./deviceId";
 import { clearStoredFlow, clearStoredFlowAsync, persistFlow, readStoredFlow } from "./flowPersistence";
 import { generateOpaqueId, generatePkcePair } from "./platform/pkce";
 import type { PlatformAdapters } from "./platform/types";
@@ -193,12 +194,16 @@ export class HeadlessAuthFlowCore implements HeadlessAuthFlow {
   private readonly scopes: string[];
   private readonly autoAdvanceInternalSteps: boolean;
   private readonly autoRestartOnExpiry: boolean;
+  /** #85 risk-signal-collector opt-in — default OFF. See `buildRiskSignals()`'s doc comment. */
+  private readonly collectRiskSignals: boolean;
   private readonly listeners = new Set<(snapshot: HeadlessFlowSnapshot) => void>();
 
   private snapshot: HeadlessFlowSnapshot = IDLE_SNAPSHOT;
   private codeVerifier: string | null = null;
   /** The `state` param sent at `start()` — round-tripped by the social hop, re-verified in `resume()`. */
   private oidcState: string | null = null;
+  /** `Date.now()` at `start()` — the baseline `client_signal.flow_ms` measures from. Restored by `resume()` (`./flowPersistence.ts`'s `StoredHeadlessFlow.flowStartedAt`) so a social-redirect round trip doesn't reset it. */
+  private flowStartedAt: number | null = null;
   /**
    * Single-flight guard (double-click / React StrictMode double-invoke):
    * concurrent calls to any network-issuing method share the same in-flight
@@ -221,6 +226,7 @@ export class HeadlessAuthFlowCore implements HeadlessAuthFlow {
     this.scopes = options.scopes ?? DEFAULT_SCOPES;
     this.autoAdvanceInternalSteps = options.autoAdvanceInternalSteps ?? true;
     this.autoRestartOnExpiry = options.autoRestartOnExpiry ?? true;
+    this.collectRiskSignals = options.collectRiskSignals ?? false;
     this.transport = new HeadlessTransport({
       tenant: this.tenant,
       clientId: this.clientId,
@@ -391,6 +397,11 @@ export class HeadlessAuthFlowCore implements HeadlessAuthFlow {
 
   private async doStart(): Promise<HeadlessFlowSnapshot> {
     this.emit({ ...IDLE_SNAPSHOT, status: "loading" });
+    // Baseline for `client_signal.flow_ms` (#85) — set unconditionally
+    // (even when `collectRiskSignals` is off) since it's a cheap
+    // `Date.now()` call; `buildRiskSignals()` is what actually gates on the
+    // option before ever reading it.
+    this.flowStartedAt = Date.now();
 
     try {
       const { codeVerifier, codeChallenge } = await generatePkcePair(this.adapters.crypto);
@@ -426,11 +437,63 @@ export class HeadlessAuthFlowCore implements HeadlessAuthFlow {
     }
     this.emit({ ...this.snapshot, status: "loading" });
     try {
-      const envelope = await this.transport.submit(this.snapshot.flowToken, body);
+      const riskSignals = await this.buildRiskSignals();
+      const requestBody = riskSignals ? { ...body, risk_signals: riskSignals } : body;
+      const envelope = await this.transport.submit(this.snapshot.flowToken, requestBody);
       return await this.applyEnvelope(envelope);
     } catch (err) {
       return this.applyErrorOrRestart(err);
     }
+  }
+
+  /**
+   * #85 risk-signal-collector — builds the `risk_signals` object attached
+   * to the submit-step body (`doSubmit()` above is the only call site;
+   * `start()`/`poll()` never carry it — `client_signal.flow_ms` is only
+   * meaningful relative to a submit). Returns `undefined` (no field at all,
+   * not an empty object) when `collectRiskSignals` is off — the default —
+   * so an app that never opts in sends byte-for-byte the same body it
+   * always did.
+   *
+   * ONLY the allowlisted keys
+   * (`engineering-team/initiatives/risk-signal-collector/README.md`) are
+   * ever placed on the returned object — `device_id`/`flow_ms`/`schema`
+   * unconditionally (computed by the core itself, no platform adapter
+   * needed), `tz`/`lang`/`device_class` only when `adapters.riskSignals` is
+   * present AND returns a non-null value for that field. There is no path
+   * through this method that can add a seventh key — the bans in the spec
+   * (canvas/WebGL/audio/font fingerprint, keystroke/mouse biometrics,
+   * client-asserted IP, precise geolocation) are enforced by this method
+   * simply never having code that reads any of them, not by a filter.
+   */
+  private async buildRiskSignals(): Promise<Record<string, unknown> | undefined> {
+    if (!this.collectRiskSignals) {
+      return undefined;
+    }
+    const deviceId = await getOrCreateDeviceId(this.adapters.storage, this.adapters.crypto, this.tenant, this.clientId);
+    const signals: Record<string, unknown> = {
+      device_id: deviceId,
+      schema: "v1",
+    };
+    if (this.flowStartedAt !== null) {
+      signals.flow_ms = Date.now() - this.flowStartedAt;
+    }
+    const platform = this.adapters.riskSignals;
+    if (platform) {
+      const tz = platform.getTimezone();
+      if (tz) {
+        signals.tz = tz;
+      }
+      const lang = platform.getLanguage();
+      if (lang) {
+        signals.lang = lang;
+      }
+      const deviceClass = platform.getDeviceClass();
+      if (deviceClass) {
+        signals.device_class = deviceClass;
+      }
+    }
+    return signals;
   }
 
   private async doPoll(): Promise<HeadlessFlowSnapshot> {
@@ -458,6 +521,7 @@ export class HeadlessAuthFlowCore implements HeadlessAuthFlow {
     }
     this.codeVerifier = stored.codeVerifier;
     this.oidcState = stored.oidcState;
+    this.flowStartedAt = stored.flowStartedAt;
 
     const currentUrl = this.adapters.navigation.getCurrentUrl();
     const params = currentUrl ? new URL(currentUrl).searchParams : new URLSearchParams();
@@ -514,7 +578,7 @@ export class HeadlessAuthFlowCore implements HeadlessAuthFlow {
   }
 
   private async persistCurrentFlow(flowToken: string): Promise<void> {
-    if (!this.codeVerifier || !this.oidcState) {
+    if (!this.codeVerifier || !this.oidcState || this.flowStartedAt === null) {
       // Shouldn't happen once start() has succeeded — defensive no-op.
       return;
     }
@@ -527,6 +591,7 @@ export class HeadlessAuthFlowCore implements HeadlessAuthFlow {
       redirectUri: this.redirectUri,
       issuerHost: this.issuerHost,
       savedAt: Date.now(),
+      flowStartedAt: this.flowStartedAt,
     });
   }
 
