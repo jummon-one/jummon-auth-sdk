@@ -1,8 +1,9 @@
 import { UserManager, WebStorageStateStore, type User, type UserManagerSettings } from "oidc-client-ts";
-import { buildAuthority } from "../discovery";
+import { buildAuthority, DEFAULT_ISSUER_HOST } from "../discovery";
 import { JummonAuthError, toJummonAuthError } from "../errors";
 import { AuthStateEmitter } from "../internal/authStateEmitter";
 import { resolveStorage } from "../internal/storage";
+import { revokeToken } from "../internal/tokenExchange";
 import { mapOidcUser } from "../mapUser";
 import type {
   AuthEngine,
@@ -26,6 +27,8 @@ const DEFAULT_SCOPES = ["openid", "profile", "email", "offline_access"];
 export class RedirectEngine implements AuthEngine {
   private readonly userManager: UserManager;
   private readonly tenant: string;
+  private readonly clientId: string;
+  private readonly issuerHost: string;
   private readonly postLogoutRedirectUri: string;
   private readonly emitter = new AuthStateEmitter();
   private readonly unsubscribeHandlers: Array<() => void> = [];
@@ -40,6 +43,8 @@ export class RedirectEngine implements AuthEngine {
     }
 
     this.tenant = options.tenant;
+    this.clientId = options.clientId;
+    this.issuerHost = options.issuerHost ?? DEFAULT_ISSUER_HOST;
     this.postLogoutRedirectUri = options.postLogoutRedirectUri ?? options.redirectUri;
 
     const settings: UserManagerSettings = {
@@ -112,6 +117,30 @@ export class RedirectEngine implements AuthEngine {
   async signOut(opts?: SignOutOptions): Promise<void> {
     try {
       if (opts?.redirect === false) {
+        // #9 — the `redirect:false` fast path skips the hosted
+        // end_session_endpoint redirect entirely, so this is the ONLY
+        // server-side cleanup a `redirect:false` signOut gets. Same
+        // best-effort RFC 7009 fix `HeadlessEngineCore.signOut()` already
+        // has (`../core/headlessEngineCore.ts`'s `revokeStolenableTokens`) —
+        // read the refresh_token before `removeUser()` clears it, revoke it
+        // via the discovery doc's `revocation_endpoint` (never hardcoded),
+        // and never let a revoke failure block/fail signOut.
+        const oidcUser = await this.userManager.getUser();
+        if (oidcUser?.refresh_token) {
+          try {
+            await revokeToken({
+              tenant: this.tenant,
+              issuerHost: this.issuerHost,
+              clientId: this.clientId,
+              token: oidcUser.refresh_token,
+              tokenTypeHint: "refresh_token",
+            });
+          } catch {
+            // Defense-in-depth — `revokeToken()` itself never throws, see
+            // its own doc comment — but signOut() must not depend on that
+            // holding true forever.
+          }
+        }
         await this.userManager.removeUser();
         this.emit({ status: "unauthenticated" });
         return;

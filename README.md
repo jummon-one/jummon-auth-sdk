@@ -644,16 +644,20 @@ Regardless of `tokenStorage`, this SDK never persists a `client_secret`
 (none exists — `acme-app` is a public client) and every token exchange
 uses PKCE (`S256`).
 
-### `signOut()` revokes the `refresh_token` (headless mode)
+### `signOut()` revokes the `refresh_token` (both modes)
 
-In `mode: "headless"`, `signOut()` POSTs the session's `refresh_token` to
-the discovery doc's `revocation_endpoint` (RFC 7009, `token_type_hint:
-"refresh_token"`) BEFORE clearing local state — closing the "a stolen
-refresh_token survives signOut" gap. The endpoint is read from
+`signOut()` POSTs the session's `refresh_token` to the discovery doc's
+`revocation_endpoint` (RFC 7009, `token_type_hint: "refresh_token"`)
+BEFORE clearing local state — closing the "a stolen refresh_token survives
+signOut" gap. The endpoint is read from
 `GET /<tenant>/oidc/.well-known/openid-configuration`, never hardcoded.
-This runs unconditionally, including `signOut({ redirect: false })` — it's
-server-side credential cleanup, independent of whether that call also does
-an RP-initiated (`end_session_endpoint`) browser redirect.
+This applies in **both modes**: `mode: "headless"` (`HeadlessEngineCore`)
+always revokes, and `mode: "redirect"`'s `signOut({ redirect: false })`
+fast path revokes too (`RedirectEngine`) — the only server-side cleanup
+that call gets, since it deliberately skips the hosted
+`end_session_endpoint` redirect. The default `signOut()` (no `redirect:
+false`) in redirect mode navigates to the hosted end-session page instead,
+which invalidates the IdP session server-side through that flow.
 
 Revocation is strictly **best-effort and non-blocking**: a network failure,
 a `revocation_endpoint` that's temporarily down, or any non-2xx response
@@ -663,6 +667,16 @@ already returns `200` for an unknown/already-invalidated token, so a
 failure here is a genuine transport/config problem, not "already logged
 out" — but even a genuine failure must never leave the user stuck signed
 in locally with a token the server side never actually invalidated.)
+
+**Disclosed residual risk:** because revocation is best-effort, a signOut
+whose revoke call fails (offline device, `revocation_endpoint` down, etc.)
+leaves that `refresh_token` valid server-side for its normal TTL —
+`signOut()` cannot guarantee revocation, only attempt it. This is a
+narrower, honest complement to the "closes the stolen-refresh-token gap"
+claim above, not a contradiction of it: the fix closes the common case
+(a live network path to revoke on), not every case. Same disclosure
+posture as the `sessionStorage`-default exception below — a known,
+registered trade-off, not a silent gap.
 
 ## Requirements
 
