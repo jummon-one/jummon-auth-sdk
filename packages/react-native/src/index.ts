@@ -67,6 +67,8 @@ export {
   type PasskeyCreateResult,
   type PasskeyGetRequest,
   type PasskeyGetResult,
+  createReactNativeRiskSignals,
+  type RiskSignalsNativeDeps,
 } from "./adapters";
 
 // Re-exported for convenience — a caller building a login screen typically
@@ -77,6 +79,7 @@ export type {
   JummonUser,
   OtpEnrollmentChallenge,
   PasskeyRegistrationResult,
+  PlatformRiskSignals,
 } from "@jummon/auth/core";
 export { JummonAuthError } from "@jummon/auth/core";
 export type { JummonAuthErrorCode } from "@jummon/auth/core";

@@ -35,6 +35,7 @@ describe("createReactNativePlatformAdapters", () => {
     expect(adapters.crypto).toBeDefined();
     expect(adapters.navigation).toBeDefined();
     expect(adapters.webauthn).toBeDefined();
+    expect(adapters.riskSignals).toBeDefined();
   });
 
   it("omits `webauthn` entirely when `passkey` is not supplied — degrades to passkey_failed/passkey_origin_unsupported per PlatformAdapters' own contract, never a crash", () => {
@@ -46,5 +47,29 @@ describe("createReactNativePlatformAdapters", () => {
     });
 
     expect(adapters.webauthn).toBeUndefined();
+  });
+
+  it("always provides `riskSignals` (never undefined) — it degrades per-field to null internally rather than needing to be omitted like webauthn", () => {
+    const adapters = createReactNativePlatformAdapters({
+      asyncStorage: fakeAsyncStorage(),
+      secureStore: fakeSecureStore(),
+      expoCrypto: fakeExpoCrypto(),
+      linking: fakeLinking(),
+    });
+
+    expect(adapters.riskSignals).toBeDefined();
+    expect(adapters.riskSignals?.getLanguage()).toBeNull();
+  });
+
+  it("wires supplied `riskSignals` deps through to the adapter", () => {
+    const adapters = createReactNativePlatformAdapters({
+      asyncStorage: fakeAsyncStorage(),
+      secureStore: fakeSecureStore(),
+      expoCrypto: fakeExpoCrypto(),
+      linking: fakeLinking(),
+      riskSignals: { getLanguage: () => "pt-BR" },
+    });
+
+    expect(adapters.riskSignals?.getLanguage()).toBe("pt-BR");
   });
 });
