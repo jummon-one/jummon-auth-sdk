@@ -31,7 +31,6 @@
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist",
-    "prepare": "tsup",
     "test": "vitest run",
     "test:watch": "vitest"
   },

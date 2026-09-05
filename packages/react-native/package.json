@@ -31,7 +31,6 @@
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist",
-    "prepare": "tsup",
     "prepack": "node scripts/verify-no-file-deps.cjs",
     "test": "vitest run",
     "test:watch": "vitest"
