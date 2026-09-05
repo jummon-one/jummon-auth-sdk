@@ -47,6 +47,10 @@
   },
   "files": [
     "dist",
+    "core.js",
+    "core.d.ts",
+    "react.js",
+    "react.d.ts",
     "README.md",
     "MIGRATION-from-popup.md",
     "ROADMAP.md"
