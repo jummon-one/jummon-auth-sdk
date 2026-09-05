@@ -17,6 +17,11 @@ Jummon IdP, with silent (refresh_token) renewal and a thin React binding.
   `signInCallback`, `signOut`, `getUser`, `getAccessToken`,
   `onAuthStateChanged`, `isAuthenticated`) is identical across both modes —
   switching later is a `mode` option change, not a rewrite.
+- **React Native / Expo?** This package is browser-only (`window`,
+  `localStorage`, `crypto.subtle`) — use
+  [`@jummon/auth-react-native`](./packages/react-native/README.md) instead,
+  built on the same agnostic core (`@jummon/auth/core`) and headless-only
+  (no hosted-redirect mode on RN).
 
 If you're migrating off `oidc-client-ts`'s `signinPopup()`, read
 [`MIGRATION-from-popup.md`](./MIGRATION-from-popup.md) first — it's a
@@ -219,7 +224,7 @@ const flow = auth.startAuthFlow();
 
 const unsubscribe = flow.onStateChange((snapshot) => {
   // snapshot.status: "idle" | "loading" | "needs_credentials" |
-  //   "needs_passkey_assertion" | "needs_mfa" |
+  //   "needs_passkey_assertion" | "needs_password" | "needs_mfa" |
   //   "needs_mfa_configure" | "needs_social_redirect" |
   //   "needs_required_action" | "authenticated" | "error"
   renderYourOwnUiFor(snapshot);
@@ -255,6 +260,9 @@ await flow.startSocialLogin("google");
 await flow.submitMfaCode(code);
 await flow.submitRequiredAction("terms-agreement", { accepted: true });
 
+// Onboarding/recovery's create-password-form (snapshot.status === "needs_password"):
+await flow.setPassword(newPassword, newPassword);
+
 // once snapshot.status === "authenticated", auth.getUser()/getAccessToken()
 // behave exactly as they do in redirect mode — this SDK already exchanged
 // the code for tokens for you.
@@ -264,6 +272,44 @@ await flow.submitRequiredAction("terms-agreement", { accepted: true });
 `headless_requires_flow` in this mode — `startAuthFlow()` is the real
 entrypoint, because a single call can't express a multi-step login.
 
+### React binding for headless mode (`useHeadlessAuthFlow`)
+
+`useJummonAuth()` now exposes `isHeadless`/`startAuthFlow` directly (fixed a
+gap where a headless React app had no way to reach `startAuthFlow()` through
+the hook at all and had to bypass the binding entirely). For a login screen,
+prefer `useHeadlessAuthFlow()` — it manages one `HeadlessAuthFlow`'s lifecycle
+for you and mirrors its snapshot as React state:
+
+```tsx
+import { JummonAuthProvider, useHeadlessAuthFlow } from "@jummon/auth/react";
+
+export function App() {
+  return (
+    <JummonAuthProvider tenant="acme" clientId="acme-app" redirectUri="https://app.example.com/auth/callback" mode="headless">
+      <LoginScreen />
+    </JummonAuthProvider>
+  );
+}
+
+function LoginScreen() {
+  const { snapshot, start, submitPassword, startPasskeyLogin, startSocialLogin, submitMfaCode } = useHeadlessAuthFlow();
+
+  useEffect(() => {
+    start();
+  }, []);
+
+  // render your own UI off `snapshot.status`, same state machine as the
+  // framework-agnostic example above.
+}
+```
+
+`useHeadlessAuthFlow()` throws synchronously if the provider isn't
+`mode: "headless"` — same fail-loud posture as the underlying client's
+`signIn()`. This same hook works unchanged for React Native — see
+[`@jummon/auth-react-native`](./packages/react-native/README.md) below;
+`<JummonAuthProvider client={...}>` accepts a pre-built client instead of
+`JummonAuthOptions`, which is the seam the RN package plugs into.
+
 **Handled automatically (on by default, opt-out via `createJummonAuth` options):**
 - **Internal steps** (`check-session-id`, `ip-blocklist`, `ip-allowlist`) — the
   Auth API interleaves these with no UI of their own; the SDK auto-submits
@@ -271,6 +317,9 @@ entrypoint, because a single call can't express a multi-step login.
   default `true`).
 - **`otp-input-form`'s wire field** — `submitMfaCode(code)` always sends
   `{ otp: code }`, the field the backend actually reads.
+- **`create-password-form`'s wire fields** — `flow.setPassword(password,
+  confirmationPassword)` always sends `{ password, confirmation_password }`,
+  the exact fields `jummon-auth-engine`'s `SubmitStepData` reads.
 - **`flow_expired`** (flow_token TTL ~5min) — the SDK transparently calls
   `start()` again (same tenant/client/redirectUri/scope, fresh PKCE) and
   re-emits from the first step (`autoRestartOnExpiry`, default `true`). The
@@ -281,6 +330,40 @@ Full state/method reference:
 `engineering-team/initiatives/headless-embeddable-auth/design/system-design.md`
 §3.1/§6 and `design/ux-spec-wave1.md` (reference-screen contract, copy
 deck, error/microcopy table, passkey-affordance visibility rules).
+
+### Required-action step payloads (`needs_required_action`)
+
+`needs_required_action` is one wire status covering several distinct steps —
+the table below is the wire-quirk knowledge that used to live only in an
+internal integration guide, folded into the SDK itself so a new integration
+doesn't need it as tribal knowledge. **Every boolean-shaped field on this
+wire is a STRING (`"true"`/`"false"`), never a native JSON boolean** — the
+backend reads them via Go's `strconv.ParseBool`, and a native `true` is
+silently dropped, not rejected.
+
+| `current_step.ref` | Dedicated method | Wire body |
+|---|---|---|
+| `create-password-form` | `flow.setPassword(password, confirmationPassword)` | `{password, confirmation_password}` |
+| `otp-configure-form` (initial TOTP setup) | `flow.confirmMfaSetup(code)` | `{otp: code}` — same field `submitMfaCode` uses, distinct method for the distinct step |
+| `terms-agreement` (LGPD terms + consent) | `flow.submitTermsAgreement(accepted, {consentAccepted, termsVersion})` | `{terms_agreed, consent_accepted, terms_version}` on accept, `{terms_agreed: "false"}` on decline — throws synchronously if `accepted` is `true` without `consentAccepted: true` (LGPD requires a separate, explicit consent) |
+
+`buildTermsAgreementSubmit` and the `TermsAgreementSubmit`/`OtpConfigureSubmit`/
+`CreatePasswordSubmit`/`CreatePasswordStepData` types are exported from the
+package root and from `@jummon/auth/core` (`src/flow/stepPayloads.ts`) if you
+want to type your own form state against them directly.
+
+**Typed for documentation only (no dedicated method yet — use
+`flow.submitRequiredAction(ref, data)`):**
+
+| `current_step.ref` | Type | Why no dedicated method yet |
+|---|---|---|
+| `verify-email-form` | `VerifyEmailSubmit`/`VerifyEmailStepData` | `email` is always the MASKED value from `data.email`, round-tripped verbatim — the shape is simple but the "which value goes back" semantics deserve a UI-facing helper (e.g. resend cooldown handling) that wasn't in scope for this pass |
+| `validate-phone-form` | `ValidatePhoneSubmit`/`ValidatePhoneStepData` | Same shape/reasoning as email; note the SMS code is **4 digits**, not 6 like TOTP/email |
+| `device-consent-form` | `DeviceConsentSubmit`/`DeviceConsentStepData` | **Backend bug, not an SDK gap**: this one step reads `consent_accepted` from the URL QUERY STRING, not the JSON body, in the headless namespace — encoding a client-side workaround here would bake the bug into the public API right before it's fixed. Tracked as item B4 in `engineering-team/initiatives/headless-embeddable-auth/SDK-DEFINITIVE-REVIEW-SYNTHESIS-2026-09-05.md` (owned by back-end). Once fixed, this becomes a normal typed submit builder. |
+
+Any other `ref` not in either table: render a generic "action required" UI
+and call `flow.submitRequiredAction(ref, data)` — never ignore an unknown
+`ref` silently, that leaves the user stuck with no explanation.
 
 ### Post-login passkey enrollment (opt-in "Enable biometric sign-in" nudge)
 
@@ -315,6 +398,70 @@ Talks to the API gateway (`apiHost`, `POST /catalog/me/credentials/
 passkeys/{begin,finish}` — self-service, no RBAC), never the Auth API
 (`issuerHost`).
 
+### Post-login password self-service ("Change my password")
+
+`setPassword(password, confirmationPassword)` is a **different** method
+from `flow.setPassword()` above — that one answers the `create-password-form`
+required-action step *during* login (headless mode only). This one runs
+**after** the user is already signed in, in either mode:
+
+```ts
+const auth = createJummonAuth({ tenant: "acme", clientId: "acme-app", redirectUri });
+
+try {
+  await auth.setPassword(newPassword, newPassword);
+} catch (err) {
+  // err.code: "not_authenticated" | "access_denied" (federated identity —
+  //   catalog-api's FEDERATED_PASSWORD_SET_FORBIDDEN) | "invalid_password"
+  //   (tenant password policy rejected it) | "network_unreachable"
+}
+```
+
+Requires an active session — throws `not_authenticated` if
+`getAccessToken()` resolves to `null`. Talks to the API gateway (`apiHost`,
+`POST /catalog/me/credentials/password` — self-service, no RBAC), never the
+Auth API (`issuerHost`).
+
+### Post-login TOTP (authenticator app) enrollment
+
+`beginOtpEnroll()` / `confirmOtpEnroll(otp)` are a **different** pair of
+methods from the in-login `otp-configure-form` required-action step
+(`flow.submitRequiredAction("otp-configure-form", ...)`,
+`snapshot.status === "needs_mfa_configure"`) — those answer enrollment
+*during* login. This pair runs **after** the user is already signed in, in
+either mode, and is what you call from a settings screen ("Enable an
+authenticator app?"). Unlike `registerPasskey()`, there is no browser API
+round trip — enrollment is inherently two calls with a human step (scan a
+QR code, type back a code) in between:
+
+```ts
+const auth = createJummonAuth({ tenant: "acme", clientId: "acme-app", redirectUri });
+
+// Step 1 — mint the secret + provisioning URI, render it as a QR code:
+const { otpUrl, secret } = await auth.beginOtpEnroll();
+renderQrCode(otpUrl); // e.g. via a QR-code library — otpUrl is an otpauth:// URI
+// `secret` is the same value encoded in otpUrl — show it as a "can't scan?
+// enter this code" manual-entry fallback. DISPLAY ONLY: it is never sent to
+// confirmOtpEnroll(); the server validates the code against the secret IT
+// minted and persisted at beginOtpEnroll(), not a client-supplied one.
+// Never log it, never persist it.
+
+// Step 2 — once the user reads the code their authenticator app generated:
+try {
+  await auth.confirmOtpEnroll(code);
+} catch (err) {
+  // err.code: "not_authenticated" | "access_denied" (federated identity —
+  //   catalog-api's FEDERATED_OTP_SET_FORBIDDEN) | "otp_enrollment_failed"
+  //   (wrong/expired code, or beginOtpEnroll() was never called / its
+  //   window lapsed) | "network_unreachable"
+}
+```
+
+Both require an active session — throw `not_authenticated` if
+`getAccessToken()` resolves to `null`. Talk to the API gateway (`apiHost`,
+`POST /catalog/me/credentials/otp/enroll/{begin,finish}` — self-service, no
+RBAC), never the Auth API (`issuerHost`).
+
 ## API
 
 | Function | Notes |
@@ -328,6 +475,9 @@ passkeys/{begin,finish}` — self-service, no RBAC), never the Auth API
 | `isAuthenticated()` | `boolean`, convenience over `getUser()`. |
 | `onAuthStateChanged(cb)` | Subscribes to `{status:"loading"\|"authenticated"\|"unauthenticated"}`. Fires once immediately. Returns an unsubscribe function. |
 | `registerPasskey(name?)` | Standalone, **post-login** passkey enrollment (works in both `redirect` and `headless` mode — see below). |
+| `setPassword(password, confirmationPassword)` | Standalone, **post-login** "change my password" (works in both `redirect` and `headless` mode — see below). |
+| `beginOtpEnroll()` | Standalone, **post-login** TOTP enrollment, step 1/2 — mints `{otpUrl, secret}` (works in both `redirect` and `headless` mode — see below). |
+| `confirmOtpEnroll(otp)` | Standalone, **post-login** TOTP enrollment, step 2/2 — submits the first code. No `secret` parameter: the server validates against the secret it minted and persisted at `beginOtpEnroll()`. |
 
 `createJummonAuth(options)`:
 
@@ -339,7 +489,7 @@ passkeys/{begin,finish}` — self-service, no RBAC), never the Auth API
 | `scopes` | no | `["openid","profile","email","offline_access"]` | Drop `offline_access` only if you don't need silent refresh. |
 | `postLogoutRedirectUri` | no | `redirectUri` | Where the browser lands after `signOut()`. |
 | `issuerHost` | no | `"idm.jummon.com"` | `"idm.jummon.dev"` for the dev environment. Never hardcode a full OIDC URL — this is the only host you configure; every endpoint is resolved from the tenant's discovery document. |
-| `apiHost` | no | `"api.jummon.com"` | `"api.jummon.dev"` for the dev environment. Only used by `registerPasskey()` (the API gateway host, `POST /catalog/me/credentials/passkeys/*`) — **never the same host as `issuerHost`**, which is OIDC/discovery-only. |
+| `apiHost` | no | `"api.jummon.com"` | `"api.jummon.dev"` for the dev environment. Used by `registerPasskey()` (`POST /catalog/me/credentials/passkeys/*`), `setPassword()` (`POST /catalog/me/credentials/password`), and `beginOtpEnroll()`/`confirmOtpEnroll()` (`POST /catalog/me/credentials/otp/enroll/*`) — all API-gateway routes — **never the same host as `issuerHost`**, which is OIDC/discovery-only. |
 | `tokenStorage` | no | `"session"` | `"session" \| "local" \| "memory"` — see Security below. |
 | `automaticSilentRenew` | no | `true` | Background renewal before the access token expires. |
 | `autoAdvanceInternalSteps` | no | `true` | Headless only. Auto-submits `{}` past input-less internal steps (`check-session-id`, `ip-blocklist`, `ip-allowlist`) instead of surfacing them as `current_step`. |
@@ -365,6 +515,19 @@ origin has no WebAuthn — check `isPasskeySupported()` first),
 `passkey_failed` (ceremony cancelled or rejected by the server — catalog-api
 collapses several distinct upstream failures into this single code; the
 right UX is always "try again"), and `network_unreachable`.
+
+`setPassword()` can also throw `access_denied` (federated identity —
+catalog-api's `FEDERATED_PASSWORD_SET_FORBIDDEN`; a federated user's
+password is managed by their IdP, never Jummon), `invalid_password` (the
+tenant's password policy rejected it — the body carries the upstream
+message), and `network_unreachable`.
+
+`beginOtpEnroll()`/`confirmOtpEnroll()` can also throw `access_denied`
+(federated identity — catalog-api's `FEDERATED_OTP_SET_FORBIDDEN`),
+`otp_enrollment_failed` (`confirmOtpEnroll()` only — wrong/expired code, or
+`beginOtpEnroll()` was never called first / its enrollment window lapsed —
+there is no client-supplied secret to fall back on, by design), and
+`network_unreachable`.
 
 Headless-mode-specific codes (`HeadlessAuthFlow` snapshots also carry these
 on `snapshot.error`, so you rarely need a `try/catch` around every call):
@@ -432,19 +595,57 @@ uses PKCE (`S256`).
   modify that registration — talk to whoever manages your Jummon tenant's
   clients.
 
+## Monorepo (for Jummon engineering)
+
+This repo is an **npm workspaces monorepo** (`"workspaces": ["packages/*"]`):
+
+| Package | Path | What |
+|---|---|---|
+| `@jummon/auth` | repo root | Web SDK — agnostic core + browser adapters (this README). |
+| `@jummon/auth/core` | `src/core/` (subpath of the same package) | Agnostic step-machine/PKCE/tokens, `Platform*` injectable interfaces. Not a separate npm package — imported by platform packages via `@jummon/auth/core`. |
+| `@jummon/auth-react-native` | `packages/react-native/` | RN/Expo adapters — see [its README](./packages/react-native/README.md). |
+| `@jummon/s2s` | `packages/s2s/` | Server-side (private_key_jwt minting, catalog-api wrappers) — unrelated to the client-side auth flow above. |
+
+The root package stays at the repo root (not `packages/web`) deliberately —
+it's a **live, published, in-production package** (Prummo depends on it);
+moving it would be all-cost, no-benefit churn. `packages/react-native`
+depends on it via `file:../..` (not a semver range) because npm workspaces
+only auto-links dependencies BETWEEN listed workspace members
+(`packages/*`) — the root project itself isn't one, so `file:` is the
+correct local-link mechanism here, not a workaround.
+
+`npm ci` at the root resolves every package's dependencies in one pass.
+Per-package scripts (`typecheck`/`test`/`build`) also run from the root via
+`npm run <script> --workspaces --if-present` (see `.github/workflows/ci.yml`).
+
 ## Publishing (for Jummon engineering)
 
-This package ships `"private": true` and is **not published**. Before the
-first publish:
+**Public npm, trusted-publisher OIDC (tokenless) — no `NPM_TOKEN` anywhere,
+for any of the three packages.** `.github/workflows/publish.yml` triggers on
+a GitHub Release; **the Release is the human approval gate**, not a separate
+CI decision — a local `npm publish` fails by design (no OIDC id-token
+outside that workflow's runner).
 
-1. Decide the license (currently `UNLICENSED`) — OSS (`MIT`, matching the
-   rest of the industry's client-SDK convention) vs. proprietary.
-2. Flip `"private"` to `false` in `package.json`.
-3. Confirm the target registry: `publishConfig` currently points at public
-   npm (`registry.npmjs.org`, scope `@jummon`, `access: "public"`). For a
-   private-only release instead, see [`.npmrc.example`](./.npmrc.example)
-   for the GCP Artifact Registry alternative (provisioning, auth via
-   `google-artifactregistry-auth`, and the `publishConfig` fields to swap
-   in) — no source change needed either way.
-4. `npm run build && npm publish` (or `npm publish` from CI, never a local
-   long-lived token).
+Which package gets published is resolved from the **release tag**, one
+release = one package (same model `@jummon/auth` already used before the
+monorepo split, extended with a prefix for the two newer packages so their
+tags don't collide with the root's):
+
+| Tag pattern | Publishes |
+|---|---|
+| `v0.4.0` | `@jummon/auth` (repo root) |
+| `auth-react-native-v0.1.0` | `@jummon/auth-react-native` |
+| `s2s-v0.1.0` | `@jummon/s2s` |
+
+Each package needs its own **one-time npm-side Trusted Publisher setup**
+(`npmjs.com` → package → Settings → Trusted Publisher → GitHub Actions,
+owner `jummon-one`, repo `jummon-auth-sdk`, workflow filename `publish.yml`,
+no environment) before its first release-triggered publish — `@jummon/auth`
+already has this configured; `@jummon/auth-react-native`/`@jummon/s2s` do
+not yet (their first publish attempt fails with an auth error until someone
+with npm org access does this one-time step — expected, not a bug).
+
+To cut a release: bump the package's `version` in its own `package.json`,
+commit, then create a GitHub Release with a tag matching the pattern above —
+the workflow guards that the tag's version matches `package.json` before
+publishing.
