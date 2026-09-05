@@ -1,5 +1,4 @@
-import type { PlatformWebAuthn } from "@jummon/auth/core";
-import { base64UrlToBytes, bytesToBase64Url } from "../internal/base64";
+import { base64UrlToBytes, bytesToBase64Url, type PlatformWebAuthn } from "@jummon/auth/core";
 
 /**
  * Structural shape of `react-native-passkey`'s `Passkey` class — defined

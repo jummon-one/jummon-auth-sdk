@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { base64UrlToBytes, bytesToBase64Url } from "../internal/base64";
+import { base64UrlToBytes, bytesToBase64Url } from "@jummon/auth/core";
 import {
   createReactNativeWebAuthn,
   type PasskeyCreateResult,

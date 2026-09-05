@@ -1,4 +1,4 @@
-import { base64ToBytes, base64UrlToBytes, bytesToBase64Url } from "../internal/base64url";
+import { base64ToBytes, base64UrlToBytes, bytesToBase64Url } from "../internal/base64";
 
 /**
  * WebAuthn options/response wire encoding for `HeadlessAuthFlow`'s passkey

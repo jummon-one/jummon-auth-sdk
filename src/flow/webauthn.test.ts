@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bytesToBase64Url } from "../internal/base64url";
+import { bytesToBase64Url } from "../internal/base64";
 import {
   decodeCredentialCreationOptions,
   decodeCredentialRequestOptions,

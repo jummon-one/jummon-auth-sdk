@@ -1,4 +1,4 @@
-import { bytesToBase64Url } from "../../internal/base64url";
+import { bytesToBase64Url } from "../../internal/base64";
 import type { PlatformCrypto } from "./types";
 
 /**

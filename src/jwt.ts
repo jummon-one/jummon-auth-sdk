@@ -1,4 +1,4 @@
-import { base64UrlToBytes } from "./internal/base64url";
+import { base64UrlToBytes } from "./internal/base64";
 
 /**
  * Best-effort, unverified decode of a JWT payload. This SDK never verifies

@@ -26,6 +26,11 @@ export {
 } from "./headlessAuthFlowCore";
 export { HEADLESS_FLOW_STORAGE_PREFIX } from "./flowPersistence";
 export { DEVICE_ID_STORAGE_PREFIX, getOrCreateDeviceId, rotateDeviceId } from "./deviceId";
+// THE canonical base64/base64url codec (B1 fix — see `../internal/base64.ts`'s
+// doc comment) — re-exported so a platform package (`@jummon/auth-react-native`)
+// uses the EXACT same dependency-free implementation instead of vendoring
+// its own copy. There is no `atob`/`btoa`/`Buffer` branch anywhere in it.
+export { base64ToBytes, base64UrlToBytes, bytesToBase64, bytesToBase64Url } from "../internal/base64";
 
 export type {
   PlatformAdapters,

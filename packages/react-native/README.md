@@ -109,16 +109,32 @@ cold-start/`'url'`-event tracking instead of `window.location`.
   `react-native-keychain` (or another bare-RN secure store) into that second
   shape if you're not on Expo.
 
-## Known runtime gotcha — `atob`/`btoa`/`Buffer`
+## Known runtime gotcha — `atob`/`btoa`/`Buffer` (fixed, B1)
 
-This package's own base64/base64url codec (`src/internal/base64.ts`) is
-dependency-free (no `atob`/`btoa`/`Buffer` assumption) specifically because
-Hermes (RN's default JS engine) doesn't ship those globals. If your app also
-pulls in `@jummon/auth`'s web-oriented code paths some other way, make sure
-you're only importing `@jummon/auth/core` (as this package does) — the main
-`@jummon/auth` entry and `@jummon/auth/react`'s non-headless bits are
+`@jummon/auth`'s base64/base64url codec (`src/internal/base64.ts`, shared
+via the `@jummon/auth/core` re-export this package imports from — see
+`adapters/webauthn.ts`) is dependency-free (no `atob`/`btoa`/`Buffer`
+assumption) specifically because Hermes (RN's default JS engine) doesn't
+ship those globals. This package never vendors its own copy — every base64
+operation in this package's own code (WebAuthn's binary field
+encoding/decoding) goes through that one shared implementation. If your app
+also pulls in `@jummon/auth`'s web-oriented code paths some other way, make
+sure you're only importing `@jummon/auth/core` (as this package does) — the
+main `@jummon/auth` entry and `@jummon/auth/react`'s non-headless bits are
 web-oriented and may assume browser globals this package's own code never
 touches.
+
+### Metro module resolution (B2)
+
+Metro (RN's bundler) only honors `package.json`'s `exports` map with
+`unstable_enablePackageExports` enabled, which isn't default across the
+`react-native >=0.70` peer range this package targets. `@jummon/auth`
+ships root-level proxy files (`core.js`/`core.d.ts`, `react.js`/`react.d.ts`
+at the package root, re-exporting `dist/core.js`/`dist/react.js`) so
+`import ... from "@jummon/auth/core"` resolves via plain Node-style
+resolution too — no Metro config change needed on your end for this
+package's own imports to work, and none needed in your app either unless
+you import `@jummon/auth/core`/`@jummon/auth/react` directly yourself.
 
 ## Passkeys
 
