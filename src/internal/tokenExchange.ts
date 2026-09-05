@@ -5,6 +5,14 @@ export interface DiscoveryDocument {
   issuer: string;
   token_endpoint: string;
   end_session_endpoint?: string;
+  /**
+   * RFC 7009 revocation endpoint. Confirmed live in production —
+   * zitadel/oidc (`jummon-auth-engine`'s OIDC library) mounts `/revoke` and
+   * advertises it here. `revokeToken()` below reads this field; NEVER
+   * hardcode the path (`CLAUDE.md`'s "OIDC client" rule — discovery doc is
+   * the only source of truth for any endpoint).
+   */
+  revocation_endpoint?: string;
   [key: string]: unknown;
 }
 
@@ -107,6 +115,63 @@ export async function refreshAccessToken(args: RefreshArgs): Promise<TokenRespon
     },
     "silent_renew_failed",
   );
+}
+
+export interface RevokeArgs {
+  tenant: string;
+  issuerHost: string;
+  clientId: string;
+  /** The token value to revoke — never logged, see this function's doc comment. */
+  token: string;
+  tokenTypeHint: "refresh_token" | "access_token";
+}
+
+/**
+ * RFC 7009 token revocation — `HeadlessEngineCore.signOut()`'s fix for "a
+ * stolen refresh_token survives signOut" (P1). Reads `revocation_endpoint`
+ * off the discovery doc, never hardcoded (`DiscoveryDocument`'s doc
+ * comment). Authenticates the same way this SDK's other token-endpoint
+ * calls do (`postTokenRequest` above) — `client_id` only, since every
+ * client this SDK talks to is a PUBLIC client (no secret, PKCE-only,
+ * `JummonAuthOptions`' own doc comment); a private_key_jwt/secret client
+ * would need that same client-auth mechanism added here, not a different
+ * one — this SDK doesn't support those client types today.
+ *
+ * Deliberately NEVER THROWS and returns a bare `boolean` (not a
+ * `TokenResponse`) — revocation must be best-effort/non-blocking:
+ * RFC 7009 §2.2 already returns `200` for an unknown/already-invalidated
+ * token, so a non-2xx or network failure here is a genuine transport/
+ * config problem, not "already revoked" — and even then, the caller must
+ * still clear local state and complete `signOut()` rather than leave the
+ * user stuck signed in because a revoke call happened to fail. Callers
+ * that care about the outcome (tests, mostly) can inspect the returned
+ * boolean; `signOut()` itself does not.
+ *
+ * NEVER logs `args.token` or the request body — only the discovery
+ * fetch/network-level failure (no token value) ever reaches an error path.
+ */
+export async function revokeToken(args: RevokeArgs): Promise<boolean> {
+  try {
+    const discovery = await fetchDiscoveryDocument(args.tenant, args.issuerHost);
+    if (!discovery.revocation_endpoint) {
+      return false;
+    }
+    const response = await fetch(discovery.revocation_endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        token: args.token,
+        token_type_hint: args.tokenTypeHint,
+        client_id: args.clientId,
+      }).toString(),
+      credentials: "omit",
+    });
+    return response.ok;
+  } catch {
+    // Best-effort by design — see doc comment above. Never rethrow, never
+    // log `args.token`.
+    return false;
+  }
 }
 
 async function postTokenRequest(

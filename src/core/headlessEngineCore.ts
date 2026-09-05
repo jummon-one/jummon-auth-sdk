@@ -1,7 +1,7 @@
 import { DEFAULT_ISSUER_HOST } from "../discovery";
 import { JummonAuthError, toJummonAuthError } from "../errors";
 import { AuthStateEmitter } from "../internal/authStateEmitter";
-import { fetchDiscoveryDocument, refreshAccessToken, type TokenResponse } from "../internal/tokenExchange";
+import { fetchDiscoveryDocument, refreshAccessToken, revokeToken, type TokenResponse } from "../internal/tokenExchange";
 import { decodeJwtPayload } from "../jwt";
 import { buildJummonUser } from "../mapUser";
 import type { AuthEngine, AuthState, JummonAuthOptions, JummonUser, SignInOptions, SignOutOptions } from "../types";
@@ -81,6 +81,15 @@ export class HeadlessEngineCore implements AuthEngine {
 
   async signOut(opts?: SignOutOptions): Promise<void> {
     const session = await this.read();
+    // Revoke BEFORE clearing local state — see revokeStolenableTokens()'s
+    // doc comment for why this ordering matters and why it never blocks/
+    // fails signOut. Runs unconditionally (even when `redirect: false`) —
+    // revocation is server-side cleanup of a bearer credential, unrelated
+    // to whether this call also does an RP-initiated (end_session_endpoint)
+    // browser redirect.
+    if (session) {
+      await this.revokeStolenableTokens(session);
+    }
     this.clear();
     this.emitter.emit({ status: "unauthenticated" });
     if (opts?.redirect === false || !session) {
@@ -170,6 +179,43 @@ export class HeadlessEngineCore implements AuthEngine {
     const user = this.mapSession(persisted);
     this.emitter.emit({ status: "authenticated", user });
     return user;
+  }
+
+  /**
+   * RFC 7009 revocation for the session's `refresh_token` — closes "a
+   * stolen refresh_token survives signOut" (P1). Best-effort: `revokeToken()`
+   * never throws, and this method never throws either, so a revoke failure
+   * (network blip, revocation_endpoint temporarily down) never blocks or
+   * fails `signOut()` — the caller always proceeds to clear local state
+   * regardless of the outcome. Called BEFORE `this.clear()` purely so the
+   * refresh_token value is still on hand to send; it does not affect
+   * whether local state ends up cleared (that happens unconditionally
+   * right after, in `signOut()`).
+   *
+   * Only the refresh_token is revoked, not the access_token — the
+   * short-lived access_token expires on its own shortly regardless, and
+   * revoking it separately would be a second network call for no
+   * meaningful security gain here (RFC 7009 §2.1 permits revoking either;
+   * the refresh_token is the one that "survives" signOut without this fix).
+   */
+  private async revokeStolenableTokens(session: PersistedHeadlessSession): Promise<void> {
+    if (!session.refresh_token) {
+      return;
+    }
+    try {
+      await revokeToken({
+        tenant: this.tenant,
+        issuerHost: this.issuerHost,
+        clientId: this.clientId,
+        token: session.refresh_token,
+        tokenTypeHint: "refresh_token",
+      });
+    } catch {
+      // Defense-in-depth — `revokeToken()` itself never throws (see its own
+      // doc comment), but `signOut()` must not depend on that holding true
+      // forever: a revoke failure of any shape must never block/fail
+      // signOut, never leave the user "stuck signed in".
+    }
   }
 
   private mapSession(session: PersistedHeadlessSession): JummonUser {

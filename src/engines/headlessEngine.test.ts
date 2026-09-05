@@ -3,9 +3,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../internal/tokenExchange", () => ({
   fetchDiscoveryDocument: vi.fn(),
   refreshAccessToken: vi.fn(),
+  revokeToken: vi.fn(),
 }));
 
-import { fetchDiscoveryDocument, refreshAccessToken } from "../internal/tokenExchange";
+import { fetchDiscoveryDocument, refreshAccessToken, revokeToken } from "../internal/tokenExchange";
 import { HeadlessEngine } from "./headlessEngine";
 
 const OPTIONS = {
@@ -30,6 +31,7 @@ describe("HeadlessEngine", () => {
   beforeEach(() => {
     vi.mocked(fetchDiscoveryDocument).mockReset();
     vi.mocked(refreshAccessToken).mockReset();
+    vi.mocked(revokeToken).mockReset();
   });
 
   it("signIn() and signInCallback() always throw headless_requires_flow", async () => {
@@ -143,5 +145,120 @@ describe("HeadlessEngine", () => {
 
     expect(await engine.getUser()).toBeNull();
     expect(fetchDiscoveryDocument).not.toHaveBeenCalled();
+  });
+
+  it("signOut() with no refresh_token in the session never calls revokeToken() (nothing to revoke)", async () => {
+    const engine = new HeadlessEngine(OPTIONS);
+    engine.completeSignIn({ access_token: fakeJwt({ sub: "u" }), token_type: "Bearer", expires_in: 3600 });
+
+    await engine.signOut({ redirect: false });
+
+    expect(revokeToken).not.toHaveBeenCalled();
+  });
+
+  // --- P1 fix: signOut() must revoke the refresh_token (RFC 7009) ----------
+
+  describe("signOut() token revocation (P1)", () => {
+    it("revokes the session's refresh_token via revokeToken() BEFORE local state is cleared, then completes signOut", async () => {
+      vi.mocked(revokeToken).mockResolvedValue(true);
+      const engine = new HeadlessEngine(OPTIONS);
+      engine.completeSignIn({
+        access_token: fakeJwt({ sub: "u" }),
+        refresh_token: "rt-secret-1",
+        token_type: "Bearer",
+        expires_in: 3600,
+      });
+
+      await engine.signOut({ redirect: false });
+
+      expect(revokeToken).toHaveBeenCalledWith({
+        tenant: "acme",
+        issuerHost: "idm.jummon.dev",
+        clientId: "acme-app",
+        token: "rt-secret-1",
+        tokenTypeHint: "refresh_token",
+      });
+      // Local state is still cleared regardless — revoke isn't a
+      // prerequisite for completing signOut, it's a side effect of it.
+      expect(await engine.getUser()).toBeNull();
+      expect(await engine.isAuthenticated()).toBe(false);
+    });
+
+    it("still clears local state and completes signOut when revokeToken() resolves false (non-2xx / revoke failed)", async () => {
+      vi.mocked(revokeToken).mockResolvedValue(false);
+      const engine = new HeadlessEngine(OPTIONS);
+      engine.completeSignIn({
+        access_token: fakeJwt({ sub: "u" }),
+        refresh_token: "rt-secret-2",
+        token_type: "Bearer",
+        expires_in: 3600,
+      });
+
+      await expect(engine.signOut({ redirect: false })).resolves.toBeUndefined();
+
+      expect(await engine.getUser()).toBeNull();
+    });
+
+    it("still clears local state and completes signOut when revokeToken() rejects (defensive — the real implementation never throws, but signOut() must not depend on that)", async () => {
+      vi.mocked(revokeToken).mockRejectedValue(new Error("network exploded"));
+      const engine = new HeadlessEngine(OPTIONS);
+      engine.completeSignIn({
+        access_token: fakeJwt({ sub: "u" }),
+        refresh_token: "rt-secret-3",
+        token_type: "Bearer",
+        expires_in: 3600,
+      });
+
+      await expect(engine.signOut({ redirect: false })).resolves.toBeUndefined();
+
+      expect(await engine.getUser()).toBeNull();
+    });
+
+    it("revocation runs even when redirect: false — it is unconditional cleanup, not tied to the end_session_endpoint redirect", async () => {
+      vi.mocked(revokeToken).mockResolvedValue(true);
+      const engine = new HeadlessEngine(OPTIONS);
+      engine.completeSignIn({
+        access_token: fakeJwt({ sub: "u" }),
+        refresh_token: "rt-secret-4",
+        token_type: "Bearer",
+        expires_in: 3600,
+      });
+
+      await engine.signOut({ redirect: false });
+
+      expect(revokeToken).toHaveBeenCalledTimes(1);
+      // redirect:false still skips the end_session_endpoint discovery/redirect path.
+      expect(fetchDiscoveryDocument).not.toHaveBeenCalled();
+    });
+
+    it("never logs the refresh_token value anywhere during signOut()", async () => {
+      const consoleSpies = [
+        vi.spyOn(console, "log").mockImplementation(() => {}),
+        vi.spyOn(console, "info").mockImplementation(() => {}),
+        vi.spyOn(console, "warn").mockImplementation(() => {}),
+        vi.spyOn(console, "error").mockImplementation(() => {}),
+        vi.spyOn(console, "debug").mockImplementation(() => {}),
+      ];
+      vi.mocked(revokeToken).mockRejectedValue(new Error("network exploded"));
+      const secretToken = "rt-super-secret-value-do-not-log";
+      const engine = new HeadlessEngine(OPTIONS);
+      engine.completeSignIn({
+        access_token: fakeJwt({ sub: "u" }),
+        refresh_token: secretToken,
+        token_type: "Bearer",
+        expires_in: 3600,
+      });
+
+      await engine.signOut({ redirect: false });
+
+      for (const spy of consoleSpies) {
+        for (const call of spy.mock.calls) {
+          for (const arg of call) {
+            expect(String(arg)).not.toContain(secretToken);
+          }
+        }
+        spy.mockRestore();
+      }
+    });
   });
 });
