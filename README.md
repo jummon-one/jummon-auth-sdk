@@ -346,11 +346,21 @@ silently dropped, not rejected.
 | `create-password-form` | `flow.setPassword(password, confirmationPassword)` | `{password, confirmation_password}` |
 | `otp-configure-form` (initial TOTP setup) | `flow.confirmMfaSetup(code)` | `{otp: code}` — same field `submitMfaCode` uses, distinct method for the distinct step |
 | `terms-agreement` (LGPD terms + consent) | `flow.submitTermsAgreement(accepted, {consentAccepted, termsVersion})` | `{terms_agreed, consent_accepted, terms_version}` on accept, `{terms_agreed: "false"}` on decline — throws synchronously if `accepted` is `true` without `consentAccepted: true` (LGPD requires a separate, explicit consent) |
+| `device-consent-form` (OIDC device-code consent) | `flow.submitDeviceConsent(accepted)` | `{consent_accepted}` in the JSON body — like every other step now that item B4 (below) shipped |
 
-`buildTermsAgreementSubmit` and the `TermsAgreementSubmit`/`OtpConfigureSubmit`/
+`buildTermsAgreementSubmit`/`buildDeviceConsentSubmit` and the
+`TermsAgreementSubmit`/`DeviceConsentSubmit`/`OtpConfigureSubmit`/
 `CreatePasswordSubmit`/`CreatePasswordStepData` types are exported from the
 package root and from `@jummon/auth/core` (`src/flow/stepPayloads.ts`) if you
 want to type your own form state against them directly.
+
+> **Item B4, closed:** `device-consent-form` used to read `consent_accepted`
+> off the URL query string instead of the JSON body in the headless
+> namespace (`jummon-login-interface`'s `services-auth.ts`) — the SDK
+> deliberately left this ref typed-only rather than bake a workaround for a
+> backend bug into the public API. Fixed backend-side (body-first, query
+> fallback, commit `a7487e0`); `submitDeviceConsent()` now sends body-only
+> like every other step.
 
 **Typed for documentation only (no dedicated method yet — use
 `flow.submitRequiredAction(ref, data)`):**
@@ -359,7 +369,6 @@ want to type your own form state against them directly.
 |---|---|---|
 | `verify-email-form` | `VerifyEmailSubmit`/`VerifyEmailStepData` | `email` is always the MASKED value from `data.email`, round-tripped verbatim — the shape is simple but the "which value goes back" semantics deserve a UI-facing helper (e.g. resend cooldown handling) that wasn't in scope for this pass |
 | `validate-phone-form` | `ValidatePhoneSubmit`/`ValidatePhoneStepData` | Same shape/reasoning as email; note the SMS code is **4 digits**, not 6 like TOTP/email |
-| `device-consent-form` | `DeviceConsentSubmit`/`DeviceConsentStepData` | **Backend bug, not an SDK gap**: this one step reads `consent_accepted` from the URL QUERY STRING, not the JSON body, in the headless namespace — encoding a client-side workaround here would bake the bug into the public API right before it's fixed. Tracked as item B4 in `engineering-team/initiatives/headless-embeddable-auth/SDK-DEFINITIVE-REVIEW-SYNTHESIS-2026-09-05.md` (owned by back-end). Once fixed, this becomes a normal typed submit builder. |
 
 Any other `ref` not in either table: render a generic "action required" UI
 and call `flow.submitRequiredAction(ref, data)` — never ignore an unknown
@@ -584,6 +593,26 @@ Options, in increasing XSS-resistance / decreasing convenience:
 Regardless of `tokenStorage`, this SDK never persists a `client_secret`
 (none exists — `acme-app` is a public client) and every token exchange
 uses PKCE (`S256`).
+
+### `signOut()` revokes the `refresh_token` (headless mode)
+
+In `mode: "headless"`, `signOut()` POSTs the session's `refresh_token` to
+the discovery doc's `revocation_endpoint` (RFC 7009, `token_type_hint:
+"refresh_token"`) BEFORE clearing local state — closing the "a stolen
+refresh_token survives signOut" gap. The endpoint is read from
+`GET /<tenant>/oidc/.well-known/openid-configuration`, never hardcoded.
+This runs unconditionally, including `signOut({ redirect: false })` — it's
+server-side credential cleanup, independent of whether that call also does
+an RP-initiated (`end_session_endpoint`) browser redirect.
+
+Revocation is strictly **best-effort and non-blocking**: a network failure,
+a `revocation_endpoint` that's temporarily down, or any non-2xx response
+never blocks or fails `signOut()` — local state is always cleared and
+`signOut()` always completes regardless of the outcome. (RFC 7009 §2.2
+already returns `200` for an unknown/already-invalidated token, so a
+failure here is a genuine transport/config problem, not "already logged
+out" — but even a genuine failure must never leave the user stuck signed
+in locally with a token the server side never actually invalidated.)
 
 ## Requirements
 

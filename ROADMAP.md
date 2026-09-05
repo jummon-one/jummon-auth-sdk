@@ -354,17 +354,57 @@ bypassing the binding entirely. Fixed in `src/react.tsx`:
 `needs_required_action` collapses 6+ distinct steps into one status; the
 wire-quirk knowledge for each previously lived only in
 `engineering-team/initiatives/headless-embeddable-auth/PRUMMO-INTEGRATION-GUIDE.md`.
-Folded into `src/flow/stepPayloads.ts` + two new `HeadlessAuthFlow` methods
+Folded into `src/flow/stepPayloads.ts` + three `HeadlessAuthFlow` methods
 (`confirmMfaSetup` for `otp-configure-form`, `submitTermsAgreement` for
-`terms-agreement` — `create-password-form` already had `setPassword`).
+`terms-agreement`, `submitDeviceConsent` for `device-consent-form` —
+`create-password-form` already had `setPassword`).
 `verify-email-form`/`validate-phone-form` are typed for documentation only
 (no dedicated method — the masked-value round-trip/resend-cooldown UX
-deserved more design than fit this pass); `device-consent-form` is typed
-but deliberately NOT wired to a submit builder because the ACTUAL bug is
-server-side (item B4: this one step reads `consent_accepted` off the query
-string, not the JSON body, in the headless namespace) — baking a client
-workaround in now would need un-baking the moment B4 ships. See the
-README's "Required-action step payloads" section for the full table.
+deserved more design than fit this pass). See the README's "Required-action
+step payloads" section for the full table.
+
+**`device-consent-form` — CLOSED (was blocked on backend item B4, now
+shipped).** `services-auth.ts` used to read `consent_accepted` off the URL
+query string instead of the JSON body for this one step; fixed backend-side
+(body-first, query fallback, `jummon-login-interface` commit `a7487e0`).
+`buildDeviceConsentSubmit()`/`HeadlessAuthFlow.submitDeviceConsent(accepted)`
+now send `{consent_accepted}` in the body like every other required-action
+step — no different from `submitTermsAgreement`'s shape/rationale, minus
+the LGPD consent-gating (this step has no separate consent field).
+
+### signOut() token revocation (P1, SHIPPED)
+
+`HeadlessEngineCore.signOut()` (`src/core/headlessEngineCore.ts`'s
+`revokeStolenableTokens()`) now POSTs the session's `refresh_token` to the
+discovery doc's `revocation_endpoint` (RFC 7009,
+`src/internal/tokenExchange.ts`'s `revokeToken()`) BEFORE clearing local
+state — confirmed against a parallel auth-engine review that
+`revocation_endpoint` is already live in prod (zitadel/oidc mounts
+`/revoke` and advertises it). Endpoint read off the discovery doc, never
+hardcoded. Runs unconditionally (even `signOut({redirect:false})`), and is
+strictly best-effort/non-blocking at TWO layers of defense — `revokeToken()`
+itself catches every failure and returns `false` rather than throwing, and
+`revokeStolenableTokens()` wraps that call in a `try/catch` anyway so a
+future change to `revokeToken()`'s contract can't silently turn a revoke
+failure into a broken `signOut()`. Client auth is `client_id` only, matching
+every other token-endpoint call this SDK makes — this SDK only supports
+public (PKCE-only, no secret) clients today, so there's no private_key_jwt/
+secret-client auth path to add here.
+
+Shared by web and React Native — this lives in the agnostic core, not a
+platform adapter, so `@jummon/auth-react-native`'s `signOut()` gets the same
+fix with zero RN-specific code.
+
+**Known remaining gap, not in scope for this pass:** `RedirectEngine`
+(`mode: "redirect"`, wraps `oidc-client-ts`)'s own `signOut({redirect:
+false})` fast path (`userManager.removeUser()`) also does not revoke — it
+only clears local storage. This wasn't touched because the fix was scoped
+to "the core signOut path... adapter-agnostic" and `RedirectEngine` is
+explicitly NOT part of the agnostic core (see "Why the API is stable across
+this boundary" above). Worth a follow-up if the redirect-mode gap turns out
+to matter in practice (oidc-client-ts's `UserManagerSettings` has its own
+`revokeTokensOnSignout` option that could cover it without hand-rolling a
+second `revokeToken()` call site).
 
 ## Follow-ups filed, not built in this pass
 
@@ -375,14 +415,13 @@ README's "Required-action step payloads" section for the full table.
   steps have a `resend_available_at` timestamp a real method should probably
   surface/gate on, not just pass through) — scoped out to avoid guessing at
   that UX. Escalate to `design`/`product` before picking this up.
-- **`device-consent-form` typed submit builder** — blocked on backend item B4
-  (`services-auth.ts` reads `consent_accepted` from the query string instead
-  of the body for this one step) shipping first; see this file's "Step-payload
-  knowledge fold" section above for why encoding a workaround now is the
-  wrong order of operations.
 - **B5's npm Trusted Publisher setup for the two new packages** — a founder/
   npm-org-access, one-time, per-package step (`npmjs.com` UI), not something
   this repo's code/CI can do for itself. See the README's "Publishing"
   section for the exact steps; `@jummon/auth-react-native`/`@jummon/s2s`'s
   first release-triggered publish will fail with an auth error until it's
   done — expected, not a regression.
+- **`RedirectEngine`'s own `signOut({redirect:false})` doesn't revoke** —
+  see "signOut() token revocation (P1, SHIPPED)" above; out of scope for
+  this pass (redirect mode isn't part of the agnostic core), tracked here
+  so it isn't a silent gap.
