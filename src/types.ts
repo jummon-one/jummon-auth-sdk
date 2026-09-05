@@ -109,6 +109,23 @@ export interface PasskeyRegistrationResult {
   name: string;
 }
 
+/**
+ * Result of `JummonAuthClient.beginOtpEnroll()` — catalog-api's
+ * `RegisterOtpBeginResponse` (`POST /catalog/me/credentials/otp/enroll/begin`),
+ * disclosed EXACTLY ONCE (a fresh `beginOtpEnroll()` call mints a brand-new
+ * secret server-side — never re-fetchable). `secret` is for DISPLAY only
+ * (QR / manual-entry fallback) — it is NOT passed to `confirmOtpEnroll(otp)`,
+ * which takes only the code; the server validates against its own persisted
+ * copy of this exact secret, never a client-supplied one. Never log `secret`,
+ * never persist it.
+ */
+export interface OtpEnrollmentChallenge {
+  /** `otpauth://` provisioning URI — render this as a QR code for the authenticator app to scan. */
+  otpUrl: string;
+  /** Same secret encoded in `otpUrl`, for the "can't scan? enter this code manually" fallback. Display only. */
+  secret: string;
+}
+
 /** A signed-in Jummon user, derived from the validated id_token + access_token claims. */
 export interface JummonUser {
   /** Stable subject identifier (the user's UUID within the tenant). */

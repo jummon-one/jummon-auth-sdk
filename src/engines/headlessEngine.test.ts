@@ -72,15 +72,32 @@ describe("HeadlessEngine", () => {
     const states: string[] = [];
     engine.onAuthStateChanged((state) => states.push(state.status));
 
+    // completeSignIn() is synchronous (in-memory cache write + emit), so it
+    // always wins a race against the subscribe-time initial snapshot, which
+    // now goes through the async `PlatformStorage` interface (required so a
+    // React Native adapter can back it with `AsyncStorage` — see
+    // `PlatformStorage`'s doc comment in `core/platform/types.ts`) and can no
+    // longer resolve before this synchronous call returns, the way the old
+    // fully-synchronous `Storage` read did. `headlessEngineCore.ts`'s
+    // `read()` re-checks the cache after awaiting storage specifically so
+    // this in-flight initial read never stomps the write that raced ahead of
+    // it — both emissions converge on "authenticated", never a stale
+    // "unauthenticated" from before completeSignIn() ran.
     engine.completeSignIn({
       access_token: fakeJwt({ sub: "u" }),
       token_type: "Bearer",
       expires_in: 3600,
     });
 
-    await Promise.resolve();
-    expect(states).toContain("unauthenticated");
-    expect(states).toContain("authenticated");
+    // Flush every microtask hop the subscribe-time storage round trip needs
+    // (await storage.getItem() -> await read() -> await getUser() -> the
+    // onAuthStateChanged .then(cb) reaction).
+    for (let i = 0; i < 5; i += 1) {
+      await Promise.resolve();
+    }
+
+    expect(states.length).toBeGreaterThanOrEqual(1);
+    expect(states.every((status) => status === "authenticated")).toBe(true);
   });
 
   it("getAccessToken() silently refreshes an expired access_token using the stored refresh_token", async () => {

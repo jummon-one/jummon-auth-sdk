@@ -61,6 +61,7 @@ export interface HeadlessThemeConfig {
 export type HeadlessFlowState =
   | "needs_credentials"
   | "needs_passkey_assertion"
+  | "needs_password"
   | "needs_mfa"
   | "needs_mfa_configure"
   | "needs_social_redirect"

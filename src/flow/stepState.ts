@@ -14,6 +14,11 @@ const STEP_REF_TO_STATE: Record<string, HeadlessFlowState> = {
   "username-password-form": "needs_credentials",
   "otp-input-form": "needs_mfa",
   "otp-configure-form": "needs_mfa_configure",
+  // jummon-auth-engine's create_password.go — served both for first-time
+  // onboarding (REQUIRED_ACTION_CONFIGURE_PASSWORD) and recovery
+  // (REQUIRED_ACTION_UPDATE_PASSWORD). `HeadlessAuthFlow.setPassword()`
+  // answers this step.
+  "create-password-form": "needs_password",
   "terms-agreement": "needs_required_action",
   "consent-form": "needs_required_action",
   "device-consent-form": "needs_required_action",

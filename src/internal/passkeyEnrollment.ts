@@ -1,5 +1,7 @@
 import { JummonAuthError } from "../errors";
 import { decodeCredentialCreationOptions, encodeAttestationForWire } from "../flow/webauthn";
+import { browserWebAuthn } from "../platform/browser/webauthn";
+import type { PlatformWebAuthn } from "../core/platform/types";
 import type { PasskeyRegistrationResult } from "../types";
 
 /**
@@ -60,28 +62,32 @@ interface CatalogHTTPErrorBody {
  * admin configured this tenant's `passwordless_config` RP". Exported so an
  * app can gate its "Enable passkey" nudge button before ever calling
  * `registerPasskey()`.
+ *
+ * `webauthn` defaults to the browser adapter (`../platform/browser/webauthn.ts`)
+ * — same check this function always performed pre-refactor, now behind
+ * `PlatformWebAuthn` so a React Native caller (Phase 2) can pass its own
+ * `react-native-passkey`-backed adapter instead.
  */
-export function isPasskeySupported(): boolean {
-  return (
-    typeof window !== "undefined" &&
-    typeof navigator !== "undefined" &&
-    typeof navigator.credentials?.create === "function" &&
-    typeof (window as unknown as { PublicKeyCredential?: unknown }).PublicKeyCredential === "function"
-  );
+export function isPasskeySupported(webauthn: PlatformWebAuthn = browserWebAuthn): boolean {
+  return webauthn.isSupported();
 }
 
 /**
- * Runs the full begin → `navigator.credentials.create()` → finish ceremony.
- * `accessToken` must already be a valid (non-expired) user access_token —
- * callers go through `JummonAuthClient.registerPasskey()` (`../client.ts`),
- * which resolves it via `engine.getAccessToken()` first.
+ * Runs the full begin → WebAuthn `create()` → finish ceremony. `accessToken`
+ * must already be a valid (non-expired) user access_token — callers go
+ * through `JummonAuthClient.registerPasskey()` (`../client.ts`), which
+ * resolves it via `engine.getAccessToken()` first.
+ *
+ * `webauthn` defaults to the browser adapter — see `isPasskeySupported()`'s
+ * doc comment for why this is a parameter, not a hardcoded `navigator` call.
  */
 export async function enrollPasskey(
   accessToken: string,
   name: string | undefined,
   opts: PasskeyEnrollmentOptions,
+  webauthn: PlatformWebAuthn = browserWebAuthn,
 ): Promise<PasskeyRegistrationResult> {
-  if (!isPasskeySupported()) {
+  if (!isPasskeySupported(webauthn)) {
     throw new JummonAuthError(
       "passkey_origin_unsupported",
       "WebAuthn isn't available in this browser/origin — registerPasskey() requires a secure context " +
@@ -93,9 +99,7 @@ export async function enrollPasskey(
 
   let credential: PublicKeyCredential | null;
   try {
-    credential = (await navigator.credentials.create({
-      publicKey: decodeCredentialCreationOptions(begin.options),
-    })) as PublicKeyCredential | null;
+    credential = await webauthn.create(decodeCredentialCreationOptions(begin.options));
   } catch (err) {
     // Covers the user dismissing/cancelling the platform UI
     // (NotAllowedError) as well as any other WebAuthn-level rejection.

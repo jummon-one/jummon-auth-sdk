@@ -535,6 +535,89 @@ describe("HeadlessAuthFlow", () => {
     expect(transportMock.submit).toHaveBeenCalledWith("ft-1", { otp: "257424" });
   });
 
+  // --- confirmMfaSetup(): otp-configure-form (distinct step, same wire field) --
+
+  it("confirmMfaSetup() sends { otp } on the wire, same field as submitMfaCode but a distinct method for otp-configure-form", async () => {
+    transportMock.start.mockResolvedValue(envelope({ current_step: { ref: "otp-configure-form" }, data: { otp_string: "otpauth://totp/x" } }));
+    transportMock.submit.mockResolvedValue(
+      envelope({ status: "authenticated", current_step: null, code: "auth-code", oidc_state: "s", data: {} }),
+    );
+    vi.mocked(exchangeAuthorizationCode).mockResolvedValue({ access_token: "at", token_type: "Bearer" });
+    const flow = createHeadlessAuthFlow(OPTIONS, sink);
+    const startSnapshot = await flow.start();
+
+    expect(startSnapshot.status).toBe("needs_mfa_configure");
+
+    await flow.confirmMfaSetup("123456");
+
+    expect(transportMock.submit).toHaveBeenCalledWith("ft-1", { otp: "123456" });
+  });
+
+  // --- submitTermsAgreement(): terms-agreement's string-booleans + LGPD consent gate ---
+
+  it("submitTermsAgreement(true, ...) sends string booleans + terms_version, never native JSON booleans", async () => {
+    transportMock.start.mockResolvedValue(envelope({ current_step: { ref: "terms-agreement" } }));
+    transportMock.submit.mockResolvedValue(
+      envelope({ status: "authenticated", current_step: null, code: "auth-code", oidc_state: "s", data: {} }),
+    );
+    vi.mocked(exchangeAuthorizationCode).mockResolvedValue({ access_token: "at", token_type: "Bearer" });
+    const flow = createHeadlessAuthFlow(OPTIONS, sink);
+    await flow.start();
+
+    await flow.submitTermsAgreement(true, { consentAccepted: true, termsVersion: "2026-09-01" });
+
+    expect(transportMock.submit).toHaveBeenCalledWith("ft-1", {
+      terms_agreed: "true",
+      consent_accepted: "true",
+      terms_version: "2026-09-01",
+    });
+  });
+
+  it("submitTermsAgreement(false) sends only terms_agreed:\"false\", no consent/version fields", async () => {
+    transportMock.start.mockResolvedValue(envelope({ current_step: { ref: "terms-agreement" } }));
+    transportMock.submit.mockResolvedValue(envelope({ current_step: { ref: "terms-agreement" } }));
+    const flow = createHeadlessAuthFlow(OPTIONS, sink);
+    await flow.start();
+
+    await flow.submitTermsAgreement(false);
+
+    expect(transportMock.submit).toHaveBeenCalledWith("ft-1", { terms_agreed: "false" });
+  });
+
+  it("submitTermsAgreement(true) without consentAccepted throws synchronously (caller bug, never round-trips to the backend)", async () => {
+    transportMock.start.mockResolvedValue(envelope({ current_step: { ref: "terms-agreement" } }));
+    const flow = createHeadlessAuthFlow(OPTIONS, sink);
+    await flow.start();
+
+    await expect(flow.submitTermsAgreement(true)).rejects.toThrow(/consent_accepted/);
+    expect(transportMock.submit).not.toHaveBeenCalled();
+  });
+
+  // --- setPassword(): create-password-form's wire fields ---------------------
+
+  it("setPassword() sends { password, confirmation_password } on the wire, and derives needs_password", async () => {
+    transportMock.start.mockResolvedValue(envelope({ current_step: { ref: "create-password-form" } }));
+    const flow = createHeadlessAuthFlow(OPTIONS, sink);
+    const startSnapshot = await flow.start();
+
+    expect(startSnapshot.status).toBe("needs_password");
+
+    transportMock.submit.mockResolvedValue(
+      envelope({ status: "authenticated", current_step: null, code: "auth-code", oidc_state: "s", data: {} }),
+    );
+    vi.mocked(exchangeAuthorizationCode).mockResolvedValue({
+      access_token: "at",
+      token_type: "Bearer",
+    });
+
+    await flow.setPassword("Sup3r$ecret", "Sup3r$ecret");
+
+    expect(transportMock.submit).toHaveBeenCalledWith("ft-1", {
+      password: "Sup3r$ecret",
+      confirmation_password: "Sup3r$ecret",
+    });
+  });
+
   // --- Prummo resilience #3: flow_expired auto-restarts the flow ------------
 
   it("submit() on an expired flow_token transparently restarts via start() and marks the snapshot restartedAfterExpiry", async () => {

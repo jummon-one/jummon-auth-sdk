@@ -2,12 +2,15 @@ import { HeadlessEngine } from "./engines/headlessEngine";
 import { RedirectEngine } from "./engines/redirectEngine";
 import { JummonAuthError } from "./errors";
 import { createHeadlessAuthFlow, type HeadlessAuthFlow } from "./flow/headlessAuthFlow";
+import { beginOtpEnrollment, confirmOtpEnrollment } from "./internal/otpEnrollment";
 import { DEFAULT_API_HOST, enrollPasskey } from "./internal/passkeyEnrollment";
+import { setPasswordSelfService } from "./internal/passwordSelfService";
 import type {
   AuthEngine,
   AuthState,
   JummonAuthOptions,
   JummonUser,
+  OtpEnrollmentChallenge,
   PasskeyRegistrationResult,
   SignInOptions,
   SignOutOptions,
@@ -49,6 +52,54 @@ export interface JummonAuthClient {
    * `issuerHost` — see that option's doc comment.
    */
   registerPasskey(name?: string): Promise<PasskeyRegistrationResult>;
+  /**
+   * Standalone, post-login "set/change my password" — works in BOTH
+   * `redirect` and `headless` mode, since it only needs an
+   * already-authenticated session's access_token, not a `HeadlessAuthFlow`.
+   * Distinct from `HeadlessAuthFlow.setPassword()`, which answers a
+   * `create-password-form` required-action step *during* login — see
+   * `../internal/passwordSelfService.ts`'s doc comment.
+   *
+   * Requires a signed-in user: throws `not_authenticated` if
+   * `getAccessToken()` resolves to `null`. Throws `access_denied` for a
+   * federated caller (catalog-api's `FEDERATED_PASSWORD_SET_FORBIDDEN`) and
+   * `invalid_password` when the tenant's password policy rejects it.
+   *
+   * Uses `JummonAuthOptions.apiHost` (the API gateway host), NEVER
+   * `issuerHost` — see that option's doc comment.
+   */
+  setPassword(password: string, confirmationPassword: string): Promise<void>;
+  /**
+   * Standalone, post-login TOTP (authenticator app) enrollment, step 1 of 2
+   * — mints a secret + `otpauth://` provisioning URI to render as a QR code.
+   * Works in BOTH `redirect` and `headless` mode. Distinct from the in-login
+   * `otp-configure-form` required-action step (`HeadlessFlowState`'s
+   * `needs_mfa_configure`, already handled via
+   * `HeadlessAuthFlow.submitRequiredAction`) — see
+   * `../internal/otpEnrollment.ts`'s doc comment.
+   *
+   * Requires a signed-in user: throws `not_authenticated` if
+   * `getAccessToken()` resolves to `null`. Throws `access_denied` for a
+   * federated caller (catalog-api's `FEDERATED_OTP_SET_FORBIDDEN`).
+   *
+   * Uses `JummonAuthOptions.apiHost` (the API gateway host), NEVER
+   * `issuerHost` — see that option's doc comment.
+   */
+  beginOtpEnroll(): Promise<OtpEnrollmentChallenge>;
+  /**
+   * Standalone, post-login TOTP enrollment, step 2 of 2 — submits the first
+   * code the user's authenticator app generated. There is no `secret`
+   * parameter: the server validates against the secret it minted and
+   * persisted at `beginOtpEnroll()`, never one the client supplies — see
+   * `../internal/otpEnrollment.ts`'s doc comment for why (a prior version
+   * of this method took a `secret` argument and was an MFA-takeover hole).
+   *
+   * Requires a signed-in user (same `not_authenticated`/`access_denied`
+   * conditions as `beginOtpEnroll()`). Throws `otp_enrollment_failed` when
+   * the code doesn't match, or when `beginOtpEnroll()` was never called (or
+   * its enrollment window lapsed).
+   */
+  confirmOtpEnroll(otp: string): Promise<void>;
 }
 
 /**
@@ -94,6 +145,10 @@ function buildClient(engine: AuthEngine, options: JummonAuthOptions): JummonAuth
     onAuthStateChanged: (cb) => engine.onAuthStateChanged(cb),
     dispose: () => engine.dispose(),
     registerPasskey: (name) => registerPasskeyViaEngine(engine, options, name),
+    setPassword: (password, confirmationPassword) =>
+      setPasswordViaEngine(engine, options, password, confirmationPassword),
+    beginOtpEnroll: () => beginOtpEnrollViaEngine(engine, options),
+    confirmOtpEnroll: (otp) => confirmOtpEnrollViaEngine(engine, options, otp),
   };
 }
 
@@ -111,6 +166,56 @@ async function registerPasskeyViaEngine(
     );
   }
   return enrollPasskey(accessToken, name, { apiHost: options.apiHost ?? DEFAULT_API_HOST });
+}
+
+async function setPasswordViaEngine(
+  engine: AuthEngine,
+  options: JummonAuthOptions,
+  password: string,
+  confirmationPassword: string,
+): Promise<void> {
+  const accessToken = await engine.getAccessToken();
+  if (!accessToken) {
+    throw new JummonAuthError(
+      "not_authenticated",
+      "setPassword() requires a signed-in user — call it after getUser()/isAuthenticated() " +
+        "confirms an active session.",
+    );
+  }
+  return setPasswordSelfService(accessToken, password, confirmationPassword, {
+    apiHost: options.apiHost ?? DEFAULT_API_HOST,
+  });
+}
+
+async function beginOtpEnrollViaEngine(
+  engine: AuthEngine,
+  options: JummonAuthOptions,
+): Promise<OtpEnrollmentChallenge> {
+  const accessToken = await engine.getAccessToken();
+  if (!accessToken) {
+    throw new JummonAuthError(
+      "not_authenticated",
+      "beginOtpEnroll() requires a signed-in user — call it after getUser()/isAuthenticated() " +
+        "confirms an active session.",
+    );
+  }
+  return beginOtpEnrollment(accessToken, { apiHost: options.apiHost ?? DEFAULT_API_HOST });
+}
+
+async function confirmOtpEnrollViaEngine(
+  engine: AuthEngine,
+  options: JummonAuthOptions,
+  otp: string,
+): Promise<void> {
+  const accessToken = await engine.getAccessToken();
+  if (!accessToken) {
+    throw new JummonAuthError(
+      "not_authenticated",
+      "confirmOtpEnroll() requires a signed-in user — call it after getUser()/isAuthenticated() " +
+        "confirms an active session.",
+    );
+  }
+  return confirmOtpEnrollment(accessToken, otp, { apiHost: options.apiHost ?? DEFAULT_API_HOST });
 }
 
 function validateOptions(options: JummonAuthOptions): void {

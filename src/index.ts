@@ -20,12 +20,27 @@ export type {
   SocialLoginOption,
 } from "./flow/types";
 
+export {
+  buildTermsAgreementSubmit,
+  type CreatePasswordStepData,
+  type CreatePasswordSubmit,
+  type DeviceConsentStepData,
+  type DeviceConsentSubmit,
+  type OtpConfigureSubmit,
+  type TermsAgreementSubmit,
+  type ValidatePhoneStepData,
+  type ValidatePhoneSubmit,
+  type VerifyEmailStepData,
+  type VerifyEmailSubmit,
+} from "./flow/stepPayloads";
+
 export type {
   AuthEngine,
   AuthState,
   JummonAuthMode,
   JummonAuthOptions,
   JummonUser,
+  OtpEnrollmentChallenge,
   PasskeyRegistrationResult,
   SignInOptions,
   SignOutOptions,

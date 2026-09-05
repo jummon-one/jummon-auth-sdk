@@ -31,6 +31,10 @@ export type JummonAuthErrorCode =
   | "rate_limited"
   | "passkey_failed"
   | "passkey_origin_unsupported"
+  /** Standalone `JummonAuthClient.setPassword()` (`../internal/passwordSelfService.ts`) got a non-401/403 failure off `POST /catalog/me/credentials/password` — most commonly the tenant's password policy rejected it (catalog-api's own `INVALID_PASSWORD`). Distinct from `invalid_credentials` (that one is about a *login* attempt, not a self-service password change). */
+  | "invalid_password"
+  /** Standalone `JummonAuthClient.confirmOtpEnroll()` (`../internal/otpEnrollment.ts`) got a non-401/403 failure off `POST /catalog/me/credentials/otp/enroll/finish` — most commonly the submitted code didn't match the secret `beginOtpEnroll()` minted server-side, or `beginOtpEnroll()` was never called (or its window lapsed) so there is no pending enrollment to confirm (catalog-api collapses the upstream `jummon-user-management` confirm failure into a generic wrap; the right UX is always "check the code and try again", same posture as `passkey_failed`). */
+  | "otp_enrollment_failed"
   | "social_login_failed"
   | "cors_origin_rejected"
   /** Terminal `authenticated` envelope carried a `code`, but this JS realm lost `code_verifier` (e.g. a non-social reload mid-flow) — distinct from "no code at all" (`unknown`). Recovery: call `resume()`, or restart with `start()`. */
