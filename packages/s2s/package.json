@@ -1,6 +1,6 @@
 {
   "name": "@jummon/s2s",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Server-side helper for Jummon service-account integrations: private_key_jwt token minting (cache/refresh, fail-closed) + thin catalog-api wrappers (createUser, invite, setPassword) with correct field names baked in.",
   "license": "MIT",
   "author": "Jummon",
