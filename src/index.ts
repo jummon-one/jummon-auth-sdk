@@ -13,12 +13,22 @@ export type {
   HeadlessAuthEnvelope,
   HeadlessErrorEnvelope,
   HeadlessFlowState,
+  HeadlessLoginLayout,
+  HeadlessLoginMethodLane,
+  HeadlessLoginMethodPlacement,
+  HeadlessLoginMethodRef,
   HeadlessStartRequestBody,
   HeadlessThemeConfig,
   HeadlessWireStatus,
   HeadlessWireStep,
   SocialLoginOption,
 } from "./flow/types";
+
+// ADR-0002 Wave 3 (#155) — the typed, lane-grouped projection of
+// `data.login_layout` a consumer actually reads off
+// `HeadlessFlowSnapshot.loginLayout`. See `./flow/loginLayout.ts`.
+export { deriveLoginLayout } from "./flow/loginLayout";
+export type { HeadlessLoginMethodDescriptor, HeadlessLoginMethodLayout } from "./flow/loginLayout";
 
 export {
   buildDeviceConsentSubmit,

@@ -88,6 +88,62 @@ export interface SocialLoginOption {
   enabled: boolean;
 }
 
+/**
+ * ADR-0002 Wave 3 (#155, passwordless-first login layout) — the closed set
+ * of login primitives an authored `LoginLayout` can place. Mirrors
+ * `jummon-pkg`'s `authflowmodel.LoginMethodRef` verbatim
+ * (`step_config.go`); NOT free-form — the set only grows in lockstep with a
+ * real backend-authorable capability, never via wire data alone. Widened to
+ * `| string` on the derived public type (`./loginLayout.ts`) so an
+ * unrecognized future value degrades to "render generically" instead of a
+ * type error at the consumer's build time.
+ */
+export type HeadlessLoginMethodRef = "passkey" | "social" | "sso" | "magic_link" | "password" | "otp";
+
+/** Mirrors `authflowmodel.LoginMethodLane` — `""` means "authored but explicitly unplaced", filtered out before this reaches the SDK's public `HeadlessLoginMethodLayout`. */
+export type HeadlessLoginMethodLane = "" | "primary" | "fallback" | "mfa";
+
+/**
+ * One placement inside `data.login_layout.methods` — wire shape, not the
+ * SDK's own public surface (see `./loginLayout.ts`'s `deriveLoginLayout()`
+ * for the typed, lane-grouped shape a consumer actually reads off
+ * `HeadlessFlowSnapshot.loginLayout`). `order` is only significant WITHIN a
+ * lane; `emphasis` is a pure rendering hint, never a security control —
+ * mirrors `authflowmodel.LoginMethodPlacement`'s own doc comment.
+ */
+export interface HeadlessLoginMethodPlacement {
+  method: HeadlessLoginMethodRef;
+  lane: HeadlessLoginMethodLane;
+  order: number;
+  emphasis?: "primary_cta" | "secondary" | "";
+}
+
+/**
+ * Wire shape of `data.login_layout` (`authflowmodel.LoginLayout`,
+ * `jummon-auth-engine`'s `AuthExtensionGetResponse.LoginLayout`,
+ * `json:"login_layout,omitempty"`) — NOT projected to a top-level envelope
+ * field today (unlike `available_social_logins`/`passwordless_available`),
+ * it rides inside `data` via the headless namespace's existing verbatim
+ * `data: raw?.data` passthrough (`jummon-login-interface`'s
+ * `services/headless/response.ts`), so no backend wire-contract bump was
+ * needed to read it here. `undefined`/`null`/absent means "no authored
+ * layout" — `jummon-login-interface`'s hosted SSR page falls back to its
+ * current hardcoded order for the exact same reason this SDK's
+ * `HeadlessFlowSnapshot.loginLayout` resolves to `null`: additive,
+ * behavior-neutral by construction (DESIGN-WAVE3-PASSWORDLESS-LAYOUT.md §2).
+ *
+ * Layout is presentation/ordering metadata ONLY — it is never consulted (by
+ * either side) to decide whether a method is actually reachable; that stays
+ * governed exclusively by the tenant's existing functional gates
+ * (`ValidatePassword`/`EnableSocialLogin`/`ValidatePasswordless`/`ValidateOtp`),
+ * enforced server-side. Treat `loginLayout` the same way this SDK already
+ * treats `theme`/`availableSocialLogins`: read-only, server-authoritative,
+ * never round-tripped back.
+ */
+export interface HeadlessLoginLayout {
+  methods?: HeadlessLoginMethodPlacement[];
+}
+
 export type HeadlessWireStatus = "needs_input" | "needs_redirect" | "authenticated" | "unknown";
 
 /**
@@ -108,6 +164,13 @@ export interface HeadlessAuthEnvelope {
   available_social_logins?: SocialLoginOption[];
   /** Top-level convenience copy of `data.passwordless_available`. */
   passwordless_available?: boolean;
+  /**
+   * Carries `login_layout` (see `HeadlessLoginLayout`'s doc comment) among
+   * whatever else the current step's `AuthExtensionGetResponse` projects —
+   * no dedicated top-level convenience field for it exists on this
+   * envelope today, unlike `available_social_logins`/`passwordless_available`
+   * above. `deriveLoginLayout()` (`./loginLayout.ts`) reads it off here.
+   */
   data: Record<string, unknown>;
   /** Present iff `status === "authenticated"` — the OIDC authorization code. */
   code?: string;

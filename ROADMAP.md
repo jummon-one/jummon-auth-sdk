@@ -553,6 +553,47 @@ Also re-verified the `verify-no-file-deps.cjs` guard actually blocks a
 regression: temporarily reintroduced `file:../..`, confirmed the script
 exits non-zero with a clear message, then restored the fix.
 
+### ADR-0002 Wave 3 (#155) — passwordless-first `login_layout` reflected (SHIPPED, dev-ready)
+
+The auth-engine/`jummon-pkg` side of this feature
+(`engineering-team/initiatives/auth-flow-studio/DESIGN-WAVE3-PASSWORDLESS-LAYOUT.md`)
+already emits an additive, read-only `login_layout` projection inside every
+login step's `data` bag (`AuthExtensionGetResponse.LoginLayout`,
+`json:"login_layout,omitempty"`) — and the headless namespace's existing
+verbatim `data: raw?.data` passthrough
+(`jummon-login-interface/src/server/services/headless/response.ts`) already
+carries it to this SDK with **zero backend change required** for the
+headless path specifically (no `wire-contract-v1.md` bump — no new
+top-level envelope field, it rides inside the existing `data` catch-all).
+
+Reflected here as `HeadlessFlowSnapshot.loginLayout` (`src/core/
+headlessAuthFlowCore.ts`), the SDK's typed, pre-grouped/pre-sorted
+`{primaryMethods, fallbackMethods, mfaMethods}` shape
+(`src/flow/loginLayout.ts`'s `deriveLoginLayout()`) — a consumer never
+parses `data.login_layout`'s raw `{methods: [{method, lane, order,
+emphasis}]}` wire bag itself, mirroring how `theme`/`availableSocialLogins`
+already abstract their own wire shapes. **Null-safe, behavior-neutral by
+construction**: `loginLayout` resolves to `null` for every tenant that has
+never authored one in Flow Studio (the default today, for all of them) —
+an app that never reads this field sees zero behavior change. Exported
+from both the main entry (`@jummon/auth`) and `@jummon/auth/core` (for
+`@jummon/auth-react-native` and any future platform package). 12 new tests
+(`src/flow/loginLayout.test.ts` + 4 in `src/flow/headlessAuthFlow.test.ts`):
+null-fallback (absent/null/malformed data), lane grouping + order sort,
+unplaced (`lane: ""`)/unrecognized-lane filtering, carry-forward across a
+step that doesn't re-send it, reset to `null` on `authenticated`.
+
+**Not touched, out of scope for this pass:** `jummon-login-interface`'s
+hosted-redirect SSR page (`pages/login/index.tsx`) does NOT yet render
+`login_layout` (design doc's Phase 2, separate from the headless namespace
+this SDK talks to) — `mode: "redirect"` integrations get no equivalent
+today; only `mode: "headless"` surfaces `loginLayout`. The
+`jummon-auth-sdk-stepup` worktree (`feat/loa-step-up`, unpushed, carries its
+own edits to `headlessAuthFlowCore.ts` for RFC 9470 step-up) branched before
+this change landed and will need it re-applied (rebase or manual port) when
+that branch merges — flagged, not fixed here, since that worktree is a
+separate in-flight feature this pass didn't touch.
+
 ## Follow-ups filed, not built in this pass
 
 - **Typed submit builders for `verify-email-form`/`validate-phone-form`** —

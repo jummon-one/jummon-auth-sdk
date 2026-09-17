@@ -44,6 +44,7 @@ function makeFakeFlow(): HeadlessAuthFlow {
     passkeyOriginOk: null,
     availableSocialLogins: null,
     passwordlessAvailable: null,
+    loginLayout: null,
     data: {},
     error: null,
     user: null,

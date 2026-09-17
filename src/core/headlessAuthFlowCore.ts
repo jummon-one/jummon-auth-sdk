@@ -7,6 +7,7 @@ import { clearStoredFlow, clearStoredFlowAsync, persistFlow, readStoredFlow } fr
 import { generateOpaqueId, generatePkcePair } from "./platform/pkce";
 import type { PlatformAdapters } from "./platform/types";
 import { deriveState } from "../flow/stepState";
+import { deriveLoginLayout, type HeadlessLoginMethodLayout } from "../flow/loginLayout";
 import { HeadlessTransport } from "../flow/transport";
 import type { HeadlessAuthEnvelope, HeadlessFlowState, HeadlessThemeConfig, SocialLoginOption } from "../flow/types";
 import {
@@ -43,6 +44,20 @@ export interface HeadlessFlowSnapshot {
   availableSocialLogins: SocialLoginOption[] | null;
   /** Mirrors `HeadlessAuthEnvelope.passwordless_available`. */
   passwordlessAvailable: boolean | null;
+  /**
+   * ADR-0002 Wave 3 (#155) — the tenant's authored passwordless-first login
+   * layout, pre-grouped into primary/fallback/mfa lanes and pre-sorted by
+   * `order` (see `../flow/loginLayout.ts`'s `deriveLoginLayout()`). `null`
+   * when the tenant has never authored one (every tenant until Flow Studio
+   * publishes a layout) — render your own default order in that case,
+   * exactly as before this field existed; this is the null-safe,
+   * behavior-neutral fallback the whole feature is additive on top of.
+   * Never consulted to decide whether a method is reachable — that's
+   * governed exclusively by the step's existing gates
+   * (`available_social_logins`/`passwordless_available` above,
+   * server-enforced), never by this field.
+   */
+  loginLayout: HeadlessLoginMethodLayout | null;
   data: Record<string, unknown>;
   error: JummonAuthError | null;
   user: JummonUser | null;
@@ -64,6 +79,7 @@ const IDLE_SNAPSHOT: HeadlessFlowSnapshot = {
   passkeyOriginOk: null,
   availableSocialLogins: null,
   passwordlessAvailable: null,
+  loginLayout: null,
   data: {},
   error: null,
   user: null,
@@ -655,6 +671,7 @@ export class HeadlessAuthFlowCore implements HeadlessAuthFlow {
         passkeyOriginOk: envelope.passkey_origin_ok ?? this.snapshot.passkeyOriginOk,
         availableSocialLogins: envelope.available_social_logins ?? this.snapshot.availableSocialLogins,
         passwordlessAvailable: envelope.passwordless_available ?? this.snapshot.passwordlessAvailable,
+        loginLayout: deriveLoginLayout(envelope.data) ?? this.snapshot.loginLayout,
         data: envelope.data ?? {},
         error: null,
         user: null,
@@ -683,6 +700,7 @@ export class HeadlessAuthFlowCore implements HeadlessAuthFlow {
       passkeyOriginOk: envelope.passkey_origin_ok ?? this.snapshot.passkeyOriginOk,
       availableSocialLogins: envelope.available_social_logins ?? this.snapshot.availableSocialLogins,
       passwordlessAvailable: envelope.passwordless_available ?? this.snapshot.passwordlessAvailable,
+      loginLayout: deriveLoginLayout(envelope.data) ?? this.snapshot.loginLayout,
       data: envelope.data ?? {},
       error: null,
       user: null,
@@ -730,6 +748,7 @@ export class HeadlessAuthFlowCore implements HeadlessAuthFlow {
         passkeyOriginOk: this.snapshot.passkeyOriginOk,
         availableSocialLogins: null,
         passwordlessAvailable: null,
+        loginLayout: null,
         data: {},
         error: null,
         user,
