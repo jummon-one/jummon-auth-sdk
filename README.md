@@ -268,6 +268,52 @@ await flow.setPassword(newPassword, newPassword);
 // the code for tokens for you.
 ```
 
+### Passwordless-first login layout (`snapshot.loginLayout`)
+
+ADR-0002 Wave 3 (#155) lets a tenant author, in Flow Studio, which login
+methods render as primary (passwordless-first: passkey/social/SSO),
+fallback (e.g. password, demoted), or MFA — and in what order/emphasis.
+`snapshot.loginLayout` is this SDK's typed, already-grouped projection of
+that authored intent:
+
+```ts
+const flow = auth.startAuthFlow();
+await flow.start();
+
+const { loginLayout } = flow.state;
+// loginLayout: { primaryMethods, fallbackMethods, mfaMethods } | null
+
+if (loginLayout) {
+  // Render primary methods first (as prominent CTAs), an "or" divider,
+  // then fallback methods de-emphasized. Each entry is
+  // `{ method: "passkey" | "social" | "sso" | "magic_link" | "password" | "otp" | string, emphasis: "primary_cta" | "secondary" | null }`,
+  // already sorted by the authored order within its lane.
+  for (const m of loginLayout.primaryMethods) renderPrimaryButton(m);
+  for (const m of loginLayout.fallbackMethods) renderFallbackButton(m);
+} else {
+  // Null-safe fallback: no layout has been authored for this tenant yet
+  // (the default for every tenant until someone publishes one in Flow
+  // Studio) — render your own default order, exactly as you did before
+  // this field existed. This is the ONLY behavior every existing
+  // integration keeps unless it opts into reading `loginLayout`.
+}
+```
+
+**This never changes what's reachable — only how it's arranged.** Whether
+a method is actually offered is still governed exclusively by
+`snapshot.availableSocialLogins`/`snapshot.passwordlessAvailable`/the step
+you're on, all server-enforced; `loginLayout` is presentation/ordering
+metadata layered on top, read-only, never round-tripped back to the
+backend. `otp`'s entry inside `mfaMethods` is informational (which factor a
+tenant has configured) — the SDK's own `needs_mfa`/`needs_mfa_configure`
+states already drive the actual MFA step, this array is not a new trigger
+for it.
+
+`magic_link` is a real value in the closed method-ref set but has no
+backing runtime step today — auth-engine's author-time validator rejects
+placing it, so you will not see it in a real `loginLayout` yet; it's typed
+here for forward compatibility once a future wave ships it.
+
 `auth.signIn()` / `auth.signInCallback()` both throw
 `headless_requires_flow` in this mode — `startAuthFlow()` is the real
 entrypoint, because a single call can't express a multi-step login.

@@ -141,6 +141,85 @@ describe("HeadlessAuthFlow", () => {
     expect(snapshot.passwordlessAvailable).toBe(true);
   });
 
+  // --- ADR-0002 Wave 3 (#155): passwordless-first login_layout ------------
+
+  it("surfaces an authored data.login_layout as typed, lane-grouped snapshot.loginLayout", async () => {
+    transportMock.start.mockResolvedValue(
+      envelope({
+        data: {
+          login_layout: {
+            methods: [
+              { method: "passkey", lane: "primary", order: 0, emphasis: "primary_cta" },
+              { method: "social", lane: "primary", order: 1 },
+              { method: "password", lane: "fallback", order: 0 },
+              { method: "otp", lane: "mfa", order: 0 },
+            ],
+          },
+        },
+      }),
+    );
+    const flow = createHeadlessAuthFlow(OPTIONS, sink);
+
+    const snapshot = await flow.start();
+
+    expect(snapshot.loginLayout).toEqual({
+      primaryMethods: [
+        { method: "passkey", emphasis: "primary_cta" },
+        { method: "social", emphasis: null },
+      ],
+      fallbackMethods: [{ method: "password", emphasis: null }],
+      mfaMethods: [{ method: "otp", emphasis: null }],
+    });
+  });
+
+  it("null-safe fallback: snapshot.loginLayout is null when the backend never emits login_layout (every tenant, until authored)", async () => {
+    transportMock.start.mockResolvedValue(envelope()); // no login_layout in data at all — today's real payload shape
+    const flow = createHeadlessAuthFlow(OPTIONS, sink);
+
+    const snapshot = await flow.start();
+
+    expect(snapshot.loginLayout).toBeNull();
+    // Behavior-neutral: nothing else on the snapshot regresses when the field is absent.
+    expect(snapshot.status).toBe("needs_credentials");
+  });
+
+  it("carries the last-known loginLayout forward across a step that doesn't re-send it, mirroring theme/availableSocialLogins", async () => {
+    transportMock.start.mockResolvedValue(
+      envelope({ data: { login_layout: { methods: [{ method: "password", lane: "primary", order: 0 }] } } }),
+    );
+    transportMock.submit.mockResolvedValue(envelope({ current_step: { ref: "otp-input-form" }, data: {} }));
+    const flow = createHeadlessAuthFlow(OPTIONS, sink);
+    await flow.start();
+
+    const snapshot = await flow.submitPassword("jane@example.com", "hunter2");
+
+    expect(snapshot.loginLayout).toEqual({
+      primaryMethods: [{ method: "password", emphasis: null }],
+      fallbackMethods: [],
+      mfaMethods: [],
+    });
+  });
+
+  it("resets loginLayout to null once authenticated, same as availableSocialLogins/passwordlessAvailable", async () => {
+    transportMock.start.mockResolvedValue(
+      envelope({ data: { login_layout: { methods: [{ method: "password", lane: "primary", order: 0 }] } } }),
+    );
+    transportMock.submit.mockResolvedValue(
+      envelope({ status: "authenticated", current_step: null, code: "auth-code", oidc_state: "state-1", data: {} }),
+    );
+    vi.mocked(exchangeAuthorizationCode).mockResolvedValue({
+      access_token: "at",
+      token_type: "Bearer",
+    });
+    const flow = createHeadlessAuthFlow(OPTIONS, sink);
+    await flow.start();
+
+    const snapshot = await flow.submitPassword("jane@example.com", "hunter2");
+
+    expect(snapshot.status).toBe("authenticated");
+    expect(snapshot.loginLayout).toBeNull();
+  });
+
   // --- Blocker #2: scope ---------------------------------------------------
 
   it("start() sends `scope` as a singular space-delimited string (offline_access included), never `scopes: string[]`", async () => {

@@ -56,6 +56,20 @@ export {
   type VerifyEmailSubmit,
 } from "../flow/stepPayloads";
 
+// ADR-0002 Wave 3 (#155) — same typed login-layout projection as the main
+// entry (`../index.ts`), re-exported here so a platform package
+// (`@jummon/auth-react-native`) building its own login screen off
+// `HeadlessAuthFlowCore` directly gets `HeadlessFlowSnapshot.loginLayout`
+// typed without importing from the browser-only main entry.
+export { deriveLoginLayout } from "../flow/loginLayout";
+export type { HeadlessLoginMethodDescriptor, HeadlessLoginMethodLayout } from "../flow/loginLayout";
+export type {
+  HeadlessLoginLayout,
+  HeadlessLoginMethodLane,
+  HeadlessLoginMethodPlacement,
+  HeadlessLoginMethodRef,
+} from "../flow/types";
+
 // Pure fetch-based, platform-agnostic already (no `window`/DOM coupling) —
 // see `../../ROADMAP.md`'s Phase 2 item 7. `setPasswordSelfService`/
 // `beginOtpEnrollment`/`confirmOtpEnrollment` never touched a platform
