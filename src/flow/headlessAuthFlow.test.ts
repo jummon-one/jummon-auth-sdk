@@ -141,6 +141,38 @@ describe("HeadlessAuthFlow", () => {
     expect(snapshot.passwordlessAvailable).toBe(true);
   });
 
+  // --- Issue #160: self-service magic-link sign-in ------------------------
+
+  it("surfaces `magic_link_available` from the envelope on the snapshot, null when absent", async () => {
+    transportMock.start.mockResolvedValue(envelope());
+    const flow = createHeadlessAuthFlow(OPTIONS, sink);
+    const snapshot = await flow.start();
+    expect(snapshot.magicLinkAvailable).toBeNull();
+
+    transportMock.start.mockResolvedValue(envelope({ magic_link_available: true }));
+    const flow2 = createHeadlessAuthFlow(OPTIONS, sink);
+    const snapshot2 = await flow2.start();
+    expect(snapshot2.magicLinkAvailable).toBe(true);
+  });
+
+  it("requestMagicLink() submits {username, magic_link_request: \"true\"} and surfaces data.sent, without advancing status past needs_credentials", async () => {
+    transportMock.start.mockResolvedValue(envelope({ magic_link_available: true }));
+    transportMock.submit.mockResolvedValue(
+      envelope({ current_step: { ref: "username-password-form" }, data: { sent: true } }),
+    );
+    const flow = createHeadlessAuthFlow(OPTIONS, sink);
+    await flow.start();
+
+    const snapshot = await flow.requestMagicLink("jane@example.com");
+
+    expect(transportMock.submit).toHaveBeenCalledWith("ft-1", {
+      username: "jane@example.com",
+      magic_link_request: "true",
+    });
+    expect(snapshot.status).toBe("needs_credentials");
+    expect(snapshot.data).toEqual({ sent: true });
+  });
+
   // --- ADR-0002 Wave 3 (#155): passwordless-first login_layout ------------
 
   it("surfaces an authored data.login_layout as typed, lane-grouped snapshot.loginLayout", async () => {

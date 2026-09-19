@@ -45,6 +45,13 @@ export interface HeadlessFlowSnapshot {
   /** Mirrors `HeadlessAuthEnvelope.passwordless_available`. */
   passwordlessAvailable: boolean | null;
   /**
+   * Mirrors `HeadlessAuthEnvelope.magic_link_available` (issue #160). `null`
+   * on a gate-off tenant/step — same additive-safe posture as
+   * `passwordlessAvailable`, so `requestMagicLink()` is never the right
+   * call unless this is `true`.
+   */
+  magicLinkAvailable: boolean | null;
+  /**
    * ADR-0002 Wave 3 (#155) — the tenant's authored passwordless-first login
    * layout, pre-grouped into primary/fallback/mfa lanes and pre-sorted by
    * `order` (see `../flow/loginLayout.ts`'s `deriveLoginLayout()`). `null`
@@ -79,6 +86,7 @@ const IDLE_SNAPSHOT: HeadlessFlowSnapshot = {
   passkeyOriginOk: null,
   availableSocialLogins: null,
   passwordlessAvailable: null,
+  magicLinkAvailable: null,
   loginLayout: null,
   data: {},
   error: null,
@@ -112,6 +120,19 @@ export interface HeadlessAuthFlow {
   setPassword(password: string, confirmationPassword: string): Promise<HeadlessFlowSnapshot>;
   /** Two-phase passkey login: submits `{username}`, then immediately resolves the platform's WebAuthn `get()` ceremony and submits the assertion — no second click. */
   startPasskeyLogin(username: string): Promise<HeadlessFlowSnapshot>;
+  /**
+   * Issue #160 — self-service magic-link sign-in. Sends
+   * `{username, magic_link_request: "true"}` — `magicLinkRequestValidator`
+   * (jummon-auth-engine) mints and emails a single-use sign-in link
+   * REGARDLESS of whether `username` resolves to a real account
+   * (anti-enumeration: the response never distinguishes the two cases).
+   * The resolved snapshot's `data.sent` is `true` on success; render your
+   * own "check your email" UI off it — `status` does NOT advance past
+   * `needs_input` (the flow stays on this step; the emailed link's own
+   * click, handled entirely server-side, is what actually authenticates).
+   * Only call this when `state.magicLinkAvailable === true`.
+   */
+  requestMagicLink(username: string): Promise<HeadlessFlowSnapshot>;
   /** Enrolls a new passkey during a `fido-registration` required action — resolves the platform's WebAuthn `create()` ceremony against the current step's challenge. */
   registerPasskey(): Promise<HeadlessFlowSnapshot>;
   /** Full-page/system-browser redirect to the provider only — never an iframe/WebView. */
@@ -310,6 +331,10 @@ export class HeadlessAuthFlowCore implements HeadlessAuthFlow {
     }
 
     return this.submit({ username, fido_login_response: encodeAssertionForWire(assertion) });
+  }
+
+  requestMagicLink(username: string): Promise<HeadlessFlowSnapshot> {
+    return this.submit({ username, magic_link_request: "true" });
   }
 
   async registerPasskey(): Promise<HeadlessFlowSnapshot> {
@@ -671,6 +696,7 @@ export class HeadlessAuthFlowCore implements HeadlessAuthFlow {
         passkeyOriginOk: envelope.passkey_origin_ok ?? this.snapshot.passkeyOriginOk,
         availableSocialLogins: envelope.available_social_logins ?? this.snapshot.availableSocialLogins,
         passwordlessAvailable: envelope.passwordless_available ?? this.snapshot.passwordlessAvailable,
+        magicLinkAvailable: envelope.magic_link_available ?? this.snapshot.magicLinkAvailable,
         loginLayout: deriveLoginLayout(envelope.data) ?? this.snapshot.loginLayout,
         data: envelope.data ?? {},
         error: null,
@@ -700,6 +726,7 @@ export class HeadlessAuthFlowCore implements HeadlessAuthFlow {
       passkeyOriginOk: envelope.passkey_origin_ok ?? this.snapshot.passkeyOriginOk,
       availableSocialLogins: envelope.available_social_logins ?? this.snapshot.availableSocialLogins,
       passwordlessAvailable: envelope.passwordless_available ?? this.snapshot.passwordlessAvailable,
+      magicLinkAvailable: envelope.magic_link_available ?? this.snapshot.magicLinkAvailable,
       loginLayout: deriveLoginLayout(envelope.data) ?? this.snapshot.loginLayout,
       data: envelope.data ?? {},
       error: null,
@@ -748,6 +775,7 @@ export class HeadlessAuthFlowCore implements HeadlessAuthFlow {
         passkeyOriginOk: this.snapshot.passkeyOriginOk,
         availableSocialLogins: null,
         passwordlessAvailable: null,
+        magicLinkAvailable: null,
         loginLayout: null,
         data: {},
         error: null,
