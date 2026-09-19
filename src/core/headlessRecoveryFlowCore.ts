@@ -115,6 +115,23 @@ export class HeadlessRecoveryFlowCore {
   }
 
   /**
+   * Convenience wrapper for `recovery-codes-form`'s `mode=redeem`
+   * placement (issue #163/#165 Wave 3, design §3.4/§4) — an alternative
+   * recovery FACTOR alongside SMS/email/OTP (`how-to-recover-form`'s
+   * `recovery_code` option). Purely a thin `submit({code})` — the backend
+   * infers `mode=redeem` from server-held execution state (never a
+   * client-supplied flag, `dynamic-flows` step_recovery_codes.go's own
+   * `inferMode` doc comment), so this method carries zero logic beyond
+   * naming the call site clearly. `mode=generate` (shown right after a
+   * fresh credential re-enrollment, to bootstrap the NEXT recovery) stays
+   * on the generic {@link submit} — it POSTs `{confirmed: true}`, a
+   * different shape this dedicated method does not cover.
+   */
+  async redeemRecoveryCode(code: string): Promise<HeadlessRecoveryFlowSnapshot> {
+    return this.submit({ code });
+  }
+
+  /**
    * Drives `enroll-passkey-form` end to end: reads the CURRENT step's
    * `{ceremony_id, options}` (already fetched via {@link init}/{@link current}
    * — the SAME shape today's in-login `fido-registration` step and the

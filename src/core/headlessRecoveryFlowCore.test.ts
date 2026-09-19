@@ -85,6 +85,33 @@ describe("HeadlessRecoveryFlowCore", () => {
     expect(JSON.parse(submitInit.body as string)).toEqual({ email: "user@example.com" });
   });
 
+  // issue #163/#165 Wave 3
+  it("redeemRecoveryCode(): submits {code} through the generic step endpoint", async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ token: "token-1", current_step: "validate-user-form" }), { status: 201 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify(stepEnvelope({ current_step: { step: { ref: "recovery-codes-form" } }, data: { mode: "redeem" } })),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify(stepEnvelope({ next_token: "token-3", current_step: { step: { ref: "select-credential-form" } } })),
+          { status: 200 },
+        ),
+      );
+
+    await core.init();
+    const snapshot = await core.redeemRecoveryCode("ABCD-1234");
+
+    expect(snapshot.stepRef).toBe("select-credential-form");
+    const [, submitInit] = fetchMock.mock.calls[2] as [string, RequestInit];
+    expect(JSON.parse(submitInit.body as string)).toEqual({ code: "ABCD-1234" });
+  });
+
   it("a done envelope reports status='done' and a null stepRef", async () => {
     fetchMock
       .mockResolvedValueOnce(
