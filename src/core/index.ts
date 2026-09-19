@@ -25,6 +25,22 @@ export {
   type HeadlessSessionSink,
 } from "./headlessAuthFlowCore";
 export { HEADLESS_FLOW_STORAGE_PREFIX } from "./flowPersistence";
+// Credential-type-aware account recovery (issue #163/#165) — a SEPARATE
+// step-machine from HeadlessAuthFlowCore above (drives iam-dynamic-flows'
+// execution-flow API, not auth-engine's headless Auth API). See
+// headlessRecoveryFlowCore.ts's own doc comment for what's built vs.
+// deferred to Wave 4.
+export {
+  HeadlessRecoveryFlowCore,
+  type HeadlessRecoveryFlowOptions,
+  type HeadlessRecoveryFlowSnapshot,
+  type HeadlessRecoveryFlowStatus,
+} from "./headlessRecoveryFlowCore";
+export {
+  runRecoveryPasskeyCeremony,
+  type RecoveryPasskeyChallenge,
+  type RecoveryPasskeyAttestationSubmission,
+} from "../internal/recoveryPasskeyEnrollment";
 export { DEVICE_ID_STORAGE_PREFIX, getOrCreateDeviceId, rotateDeviceId } from "./deviceId";
 // THE canonical base64/base64url codec (B1 fix — see `../internal/base64.ts`'s
 // doc comment) — re-exported so a platform package (`@jummon/auth-react-native`)

@@ -9,6 +9,13 @@ export { buildAuthority, DEFAULT_ISSUER_HOST } from "./discovery";
 export { DEFAULT_API_HOST, isPasskeySupported } from "./internal/passkeyEnrollment";
 
 export type { HeadlessAuthFlow, HeadlessFlowSnapshot } from "./flow/headlessAuthFlow";
+
+// Credential-type-aware account recovery (issue #163/#165). Exported
+// directly (not yet wired into JummonAuthClient — see
+// headlessRecoveryFlowCore.ts's doc comment for what's deferred to Wave 4),
+// same posture createHeadlessAuthFlow had before client.ts integration.
+export { createHeadlessRecoveryFlow } from "./flow/headlessRecoveryFlow";
+export type { HeadlessRecoveryFlowOptions, HeadlessRecoveryFlowSnapshot } from "./flow/headlessRecoveryFlow";
 export type {
   HeadlessAuthEnvelope,
   HeadlessErrorEnvelope,
