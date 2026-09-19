@@ -60,6 +60,7 @@ export type {
   JummonUser,
   OtpEnrollmentChallenge,
   PasskeyRegistrationResult,
+  RecoveryCodesGenerated,
   SignInOptions,
   SignOutOptions,
 } from "./types";

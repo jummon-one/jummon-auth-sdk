@@ -35,6 +35,8 @@ export type JummonAuthErrorCode =
   | "invalid_password"
   /** Standalone `JummonAuthClient.confirmOtpEnroll()` (`../internal/otpEnrollment.ts`) got a non-401/403 failure off `POST /catalog/me/credentials/otp/enroll/finish` — most commonly the submitted code didn't match the secret `beginOtpEnroll()` minted server-side, or `beginOtpEnroll()` was never called (or its window lapsed) so there is no pending enrollment to confirm (catalog-api collapses the upstream `jummon-user-management` confirm failure into a generic wrap; the right UX is always "check the code and try again", same posture as `passkey_failed`). */
   | "otp_enrollment_failed"
+  /** Standalone `JummonAuthClient.generateRecoveryCodes()`/`hasUnredeemedRecoveryCodes()` (`../internal/recoveryCodesEnrollment.ts`, build #73) got a non-401 failure off `POST/GET /catalog/me/credentials/recovery-codes/{generate,status}` — same "collapse everything to one actionable message" posture as `otp_enrollment_failed`/`passkey_failed` (no federation-guard case here — a backup-code set isn't a local-login-identity field). */
+  | "recovery_codes_failed"
   | "social_login_failed"
   | "cors_origin_rejected"
   /** Terminal `authenticated` envelope carried a `code`, but this JS realm lost `code_verifier` (e.g. a non-social reload mid-flow) — distinct from "no code at all" (`unknown`). Recovery: call `resume()`, or restart with `start()`. */

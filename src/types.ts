@@ -141,6 +141,20 @@ export interface OtpEnrollmentChallenge {
   secret: string;
 }
 
+/**
+ * Result of `JummonAuthClient.generateRecoveryCodes()` — catalog-api's
+ * `GenerateRecoveryCodesSelfResponse`
+ * (`POST /catalog/me/credentials/recovery-codes/generate`, build #73),
+ * disclosed EXACTLY ONCE (a fresh call mints a brand-new set server-side,
+ * invalidating every previously issued code — never re-fetchable). Render
+ * `codes` once for the caller to save/print/download; never persist them
+ * client-side beyond that single render.
+ */
+export interface RecoveryCodesGenerated {
+  /** The plaintext backup-code set — `XXXX-XXXX` shaped, 10 codes. Never log these. */
+  codes: string[];
+}
+
 /** A signed-in Jummon user, derived from the validated id_token + access_token claims. */
 export interface JummonUser {
   /** Stable subject identifier (the user's UUID within the tenant). */

@@ -5,6 +5,7 @@ import { createHeadlessAuthFlow, type HeadlessAuthFlow } from "./flow/headlessAu
 import { beginOtpEnrollment, confirmOtpEnrollment } from "./internal/otpEnrollment";
 import { DEFAULT_API_HOST, enrollPasskey } from "./internal/passkeyEnrollment";
 import { setPasswordSelfService } from "./internal/passwordSelfService";
+import { generateRecoveryCodesSelf, getRecoveryCodesSelfStatus } from "./internal/recoveryCodesEnrollment";
 import type {
   AuthEngine,
   AuthState,
@@ -12,6 +13,7 @@ import type {
   JummonUser,
   OtpEnrollmentChallenge,
   PasskeyRegistrationResult,
+  RecoveryCodesGenerated,
   SignInOptions,
   SignOutOptions,
 } from "./types";
@@ -100,6 +102,33 @@ export interface JummonAuthClient {
    * its enrollment window lapsed).
    */
   confirmOtpEnroll(otp: string): Promise<void>;
+  /**
+   * Standalone, post-login backup recovery-code generation (the "Backup
+   * codes" section of the caller's own account/security settings, build
+   * #73) — works in BOTH `redirect` and `headless` mode, since it only
+   * needs an already-authenticated session's access_token. ALWAYS
+   * replaces the caller's whole set — there is no "add codes" operation.
+   * Distinct from the journey-driven `recovery-codes-form` step (an
+   * unauthenticated recovery execution) — see
+   * `../internal/recoveryCodesEnrollment.ts`'s doc comment.
+   *
+   * Requires a signed-in user: throws `not_authenticated` if
+   * `getAccessToken()` resolves to `null`.
+   *
+   * Uses `JummonAuthOptions.apiHost` (the API gateway host), NEVER
+   * `issuerHost` — see that option's doc comment.
+   */
+  generateRecoveryCodes(): Promise<RecoveryCodesGenerated>;
+  /**
+   * Reports whether the caller's OWN account already has an unredeemed
+   * backup-code set — never exposes the codes themselves. Use this to
+   * render "you already have backup codes configured" before offering the
+   * (destructive) `generateRecoveryCodes()` regenerate action.
+   *
+   * Requires a signed-in user (same `not_authenticated` condition as
+   * `generateRecoveryCodes()`).
+   */
+  hasUnredeemedRecoveryCodes(): Promise<boolean>;
 }
 
 /**
@@ -149,6 +178,8 @@ function buildClient(engine: AuthEngine, options: JummonAuthOptions): JummonAuth
       setPasswordViaEngine(engine, options, password, confirmationPassword),
     beginOtpEnroll: () => beginOtpEnrollViaEngine(engine, options),
     confirmOtpEnroll: (otp) => confirmOtpEnrollViaEngine(engine, options, otp),
+    generateRecoveryCodes: () => generateRecoveryCodesViaEngine(engine, options),
+    hasUnredeemedRecoveryCodes: () => hasUnredeemedRecoveryCodesViaEngine(engine, options),
   };
 }
 
@@ -216,6 +247,36 @@ async function confirmOtpEnrollViaEngine(
     );
   }
   return confirmOtpEnrollment(accessToken, otp, { apiHost: options.apiHost ?? DEFAULT_API_HOST });
+}
+
+async function generateRecoveryCodesViaEngine(
+  engine: AuthEngine,
+  options: JummonAuthOptions,
+): Promise<RecoveryCodesGenerated> {
+  const accessToken = await engine.getAccessToken();
+  if (!accessToken) {
+    throw new JummonAuthError(
+      "not_authenticated",
+      "generateRecoveryCodes() requires a signed-in user — call it after getUser()/isAuthenticated() " +
+        "confirms an active session.",
+    );
+  }
+  return generateRecoveryCodesSelf(accessToken, { apiHost: options.apiHost ?? DEFAULT_API_HOST });
+}
+
+async function hasUnredeemedRecoveryCodesViaEngine(
+  engine: AuthEngine,
+  options: JummonAuthOptions,
+): Promise<boolean> {
+  const accessToken = await engine.getAccessToken();
+  if (!accessToken) {
+    throw new JummonAuthError(
+      "not_authenticated",
+      "hasUnredeemedRecoveryCodes() requires a signed-in user — call it after getUser()/isAuthenticated() " +
+        "confirms an active session.",
+    );
+  }
+  return getRecoveryCodesSelfStatus(accessToken, { apiHost: options.apiHost ?? DEFAULT_API_HOST });
 }
 
 function validateOptions(options: JummonAuthOptions): void {
