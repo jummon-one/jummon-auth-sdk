@@ -112,6 +112,142 @@ describe("HeadlessRecoveryFlowCore", () => {
     expect(JSON.parse(submitInit.body as string)).toEqual({ code: "ABCD-1234" });
   });
 
+  // account-recovery masked-hints/confirm-partial build
+  it("confirmPartial(): submits {partial} through the generic step endpoint", async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ token: "token-1", current_step: "validate-user-form" }), { status: 201 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify(stepEnvelope({ current_step: { step: { ref: "confirm-contact-form" } }, data: { channel: "sms" } })),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify(stepEnvelope({ next_token: "token-3", current_step: { step: { ref: "validate-recovery-form" } } })),
+          { status: 200 },
+        ),
+      );
+
+    await core.init();
+    const snapshot = await core.confirmPartial("4821");
+
+    expect(snapshot.stepRef).toBe("validate-recovery-form");
+    const [, submitInit] = fetchMock.mock.calls[2] as [string, RequestInit];
+    expect(JSON.parse(submitInit.body as string)).toEqual({ partial: "4821" });
+  });
+
+  it("confirmPartial(): a mismatch resolves IDENTICALLY to a match — no error, same advance", async () => {
+    // The server never signals match/mismatch (design §5.3) — from the
+    // SDK's perspective both paths are just "the network call succeeded
+    // and the flow advanced." This test documents that there is no
+    // branch to assert on beyond that.
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ token: "token-1", current_step: "validate-user-form" }), { status: 201 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify(stepEnvelope({ current_step: { step: { ref: "confirm-contact-form" } }, data: { channel: "email" } })),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify(stepEnvelope({ next_token: "token-3", current_step: { step: { ref: "validate-recovery-form" } } })),
+          { status: 200 },
+        ),
+      );
+
+    await core.init();
+    const snapshot = await core.confirmPartial("not-the-real-email@example.com");
+
+    expect(snapshot.status).toBe("in_progress");
+    expect(snapshot.stepRef).toBe("validate-recovery-form");
+    expect(snapshot.error).toBeNull();
+  });
+
+  describe("auto_proceed", () => {
+    it("init(): a single-channel how-to-recover-form is resolved transparently — the caller never sees that stepRef", async () => {
+      fetchMock
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ token: "token-1", current_step: "how-to-recover-form" }), { status: 201 }),
+        )
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              next_token: "token-2",
+              auto_proceed: true,
+              current_step: { step: { ref: "how-to-recover-form" } },
+              data: { options: ["whatsapp"] },
+            }),
+            { status: 200 },
+          ),
+        )
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify(stepEnvelope({ next_token: "token-3", current_step: { step: { ref: "confirm-contact-form" } } })),
+            { status: 200 },
+          ),
+        );
+
+      const snapshot = await core.init();
+
+      expect(snapshot.stepRef).toBe("confirm-contact-form");
+      // Exactly 3 calls: init POST, the auto-proceed-flagged GET, and the
+      // transparently-issued auto-submit POST — never a 4th call the
+      // caller would have had to trigger itself.
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      const [, autoSubmitInit] = fetchMock.mock.calls[2] as [string, RequestInit];
+      expect(JSON.parse(autoSubmitInit.body as string)).toEqual({ option: "whatsapp" });
+    });
+
+    it("2+ channels never auto-proceeds — the picker step is returned as-is", async () => {
+      fetchMock
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ token: "token-1", current_step: "how-to-recover-form" }), { status: 201 }),
+        )
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              next_token: "token-2",
+              auto_proceed: false,
+              current_step: { step: { ref: "how-to-recover-form" } },
+              data: { options: ["sms", "whatsapp"] },
+            }),
+            { status: 200 },
+          ),
+        );
+
+      const snapshot = await core.init();
+
+      expect(snapshot.stepRef).toBe("how-to-recover-form");
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("auto_proceed=true with no options[] fails loudly instead of hanging", async () => {
+      fetchMock
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ token: "token-1", current_step: "how-to-recover-form" }), { status: 201 }),
+        )
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              next_token: "token-2",
+              auto_proceed: true,
+              current_step: { step: { ref: "how-to-recover-form" } },
+              data: { options: [] },
+            }),
+            { status: 200 },
+          ),
+        );
+
+      await expect(core.init()).rejects.toBeInstanceOf(JummonAuthError);
+    });
+  });
+
   it("a done envelope reports status='done' and a null stepRef", async () => {
     fetchMock
       .mockResolvedValueOnce(
