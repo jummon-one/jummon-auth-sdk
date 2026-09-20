@@ -33,17 +33,18 @@ import type { PlatformWebAuthn } from "../core/platform/types";
  * PlatformPublicKeyCredentialProvider / Android Credential Manager,
  * wrapped) instead of the browser's `navigator.credentials`.
  *
- * NOT built here (design §11's Wave 4, explicitly deferred/tracked
- * separately, out of this dispatch's scope): the mobile deep-link/
- * Universal-Link resume path (R12), the PKCE proof-of-possession binding
- * the recovery-token redemption to the initiating device (R13/R17), the
- * cross-device short-code fallback (R14), and in-memory-only/never-
- * persisted-to-disk token handling (R15/R16) —
- * `RECOVERY-THREAT-MODEL.md` §3.5. This module only closes the "how does a
- * native app run the actual WebAuthn ceremony" gap design §11.2 names as
- * "purely SDK-side"; the transport-security requirements around HOW the
- * recovery journey is reached on mobile are a separate, larger piece of
- * work the design's own Wave roadmap places in Wave 4.
+ * `RECOVERY-THREAT-MODEL.md` §3.5's mobile requirements are built ELSEWHERE,
+ * not in this module: R12 (App-Link/Universal-Link-only deep-link resume)
+ * is `@jummon/auth-react-native`'s `createRecoveryReturnListener`
+ * (`packages/react-native/src/adapters/navigation.ts`); R13/R17 (PKCE
+ * device-binding) is `../core/headlessRecoveryFlowCore.ts`'s `init()`/
+ * `request()`; R15/R16 (in-memory only) is that same class's `#`-private
+ * `token`/`codeVerifier` fields. STILL NOT built (tracked as a follow-up):
+ * R14's cross-device short-code fallback, which needs a new dynamic-flows
+ * endpoint this SDK-only pass doesn't add. This module itself only ever
+ * closes "how does a native app run the actual WebAuthn ceremony," design
+ * §11.2's "purely SDK-side" scope — it takes no position on any of the
+ * above, it just receives whichever `PlatformWebAuthn` the caller injects.
  */
 export interface RecoveryPasskeyChallenge {
   ceremonyId: string;

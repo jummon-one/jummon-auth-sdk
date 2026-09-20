@@ -42,7 +42,13 @@ export {
   type ReactNativeStorageDeps,
 } from "./storage";
 export { createReactNativeCrypto, type ExpoCryptoLike } from "./crypto";
-export { createReactNativeNavigation, type LinkingLike } from "./navigation";
+export {
+  createReactNativeNavigation,
+  type LinkingLike,
+  createRecoveryReturnListener,
+  isOsVerifiedRecoveryLink,
+  type RecoveryReturnLinkHandlers,
+} from "./navigation";
 export {
   createReactNativeWebAuthn,
   type ReactNativePasskeyLike,

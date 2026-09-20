@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { createReactNativeNavigation, type LinkingLike } from "./navigation";
+import {
+  createReactNativeNavigation,
+  createRecoveryReturnListener,
+  isOsVerifiedRecoveryLink,
+  type LinkingLike,
+} from "./navigation";
 
 function mockLinking(initialUrl: string | null = null): LinkingLike & { emit: (url: string) => void } {
   let handler: ((event: { url: string }) => void) | null = null;
@@ -52,5 +57,95 @@ describe("createReactNativeNavigation", () => {
     const nav = createReactNativeNavigation(linking);
 
     expect(() => nav.clearAuthParams()).not.toThrow();
+  });
+});
+
+// threat model §3.5 R12 — App Links / Universal Links only, for the
+// recovery-token-bearing return leg specifically.
+describe("isOsVerifiedRecoveryLink", () => {
+  it("accepts https:// (App Link / Universal Link shape)", () => {
+    expect(isOsVerifiedRecoveryLink("https://acme.app/recover?token=abc")).toBe(true);
+  });
+
+  it("rejects a bare custom URL scheme", () => {
+    expect(isOsVerifiedRecoveryLink("myapp://recover?token=abc")).toBe(false);
+    expect(isOsVerifiedRecoveryLink("acme://recover?token=abc")).toBe(false);
+  });
+
+  it("rejects http:// too — App/Universal Links are always https", () => {
+    expect(isOsVerifiedRecoveryLink("http://acme.app/recover?token=abc")).toBe(false);
+  });
+
+  it("rejects a malformed URL rather than throwing", () => {
+    expect(isOsVerifiedRecoveryLink("not a url at all")).toBe(false);
+  });
+});
+
+describe("createRecoveryReturnListener", () => {
+  const matchesRecover = (url: string) => url.includes("/recover");
+
+  it("calls onRecoveryReturn for an OS-verified cold-start link", async () => {
+    const linking = mockLinking("https://acme.app/recover?token=abc");
+    const onRecoveryReturn = vi.fn();
+    const onRejectedLink = vi.fn();
+
+    createRecoveryReturnListener(linking, matchesRecover, { onRecoveryReturn, onRejectedLink });
+    await flushMicrotasks();
+
+    expect(onRecoveryReturn).toHaveBeenCalledWith("https://acme.app/recover?token=abc");
+    expect(onRejectedLink).not.toHaveBeenCalled();
+  });
+
+  it("R12: rejects a custom-scheme URL for the recovery leg — onRecoveryReturn is NEVER called for it", async () => {
+    const linking = mockLinking("myapp://recover?token=abc");
+    const onRecoveryReturn = vi.fn();
+    const onRejectedLink = vi.fn();
+
+    createRecoveryReturnListener(linking, matchesRecover, { onRecoveryReturn, onRejectedLink });
+    await flushMicrotasks();
+
+    expect(onRecoveryReturn).not.toHaveBeenCalled();
+    expect(onRejectedLink).toHaveBeenCalledOnce();
+    const [rejectedUrl, error] = onRejectedLink.mock.calls[0] as [string, { code: string }];
+    expect(rejectedUrl).toBe("myapp://recover?token=abc");
+    expect(error.code).toBe("recovery_link_not_os_verified");
+  });
+
+  it("ignores a URL that doesn't match the recovery matcher at all — neither callback fires", async () => {
+    const linking = mockLinking("acme://auth/callback?code=abc&state=s1");
+    const onRecoveryReturn = vi.fn();
+    const onRejectedLink = vi.fn();
+
+    createRecoveryReturnListener(linking, matchesRecover, { onRecoveryReturn, onRejectedLink });
+    await flushMicrotasks();
+
+    expect(onRecoveryReturn).not.toHaveBeenCalled();
+    expect(onRejectedLink).not.toHaveBeenCalled();
+  });
+
+  it("evaluates a warm-relaunch 'url' event the same way as cold start", () => {
+    const linking = mockLinking(null);
+    const onRecoveryReturn = vi.fn();
+    const onRejectedLink = vi.fn();
+
+    createRecoveryReturnListener(linking, matchesRecover, { onRecoveryReturn, onRejectedLink });
+    linking.emit("myapp://recover?token=abc");
+
+    expect(onRejectedLink).toHaveBeenCalledOnce();
+    expect(onRecoveryReturn).not.toHaveBeenCalled();
+  });
+
+  it("returns an unsubscribe function that calls the underlying subscription's remove()", () => {
+    const linking = mockLinking(null);
+    const unsubscribe = createRecoveryReturnListener(linking, matchesRecover, {
+      onRecoveryReturn: vi.fn(),
+      onRejectedLink: vi.fn(),
+    });
+
+    unsubscribe();
+
+    const addEventListenerMock = linking.addEventListener as unknown as { mock: { results: { value: { remove: () => void } }[] } };
+    const result = addEventListenerMock.mock.results[0];
+    expect(result?.value.remove).toHaveBeenCalled();
   });
 });

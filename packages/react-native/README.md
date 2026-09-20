@@ -98,6 +98,95 @@ callback back into your app. On the screen your `redirectUri` points at, call
 social-redirect flow makes, just resolved off the RN `Linking` adapter's
 cold-start/`'url'`-event tracking instead of `window.location`.
 
+**Magic link.** `requestMagicLink(username)` (`useHeadlessAuthFlow().requestMagicLink`
+when `snapshot.magicLinkAvailable === true`) reuses this EXACT same mechanism
+— the emailed link resolves to the same `redirectUri?code=&state=` shape a
+social-provider redirect does (both are just the same PKCE-protected OIDC
+authorization-code leg `start()` began), so completing it on the same
+device/app is already "just call `resume()`" with nothing extra to wire.
+This is why the SDK doesn't need a magic-link-specific deep-link handler:
+the verifier that makes the `code` redeemable never leaves this device
+(RFC 7636/RFC 8252), so even a custom-scheme `redirectUri` is safe here —
+unlike account recovery below, which historically had no such binding
+(hence R12/R13's stricter, dedicated mechanism). **Contract:** magic-link
+completion is same-device/same-app only — there's no cross-device flow (the
+email might be read on a different device than the one that started the
+flow); if you need that, treat it as a fresh sign-in on the second device
+instead of trying to resume the first device's flow there.
+
+## Account recovery
+
+`createJummonAuthReactNative(...).startRecoveryFlow(options)` is the first-
+class RN entrypoint into the credential-type-aware account-recovery journey
+(`recover-account-credential-aware`, issue #163/#165) — it hands back a
+`HeadlessRecoveryFlowCore` wired to this client's own RN `crypto`/`webauthn`
+adapters:
+
+```ts
+const flow = client.startRecoveryFlow({
+  baseHost: "dynamic.jummon.dev", // wherever iam-dynamic-flows' execution-flow API is reachable — infra-specific, not defaulted
+  flowRef: "recover-account-credential-aware",
+});
+
+let snapshot = await flow.init();
+// snapshot.stepRef drives your own UI — "validate-user-form", "how-to-recover-form",
+// "confirm-contact-form", "validate-recovery-form", "enroll-passkey-form" | "update-password-form", …
+snapshot = await flow.submit({ email });
+// ...
+snapshot = await flow.enrollPasskey(snapshot); // only once stepRef === "enroll-passkey-form" — requires `passkey` in createReactNativePlatformAdapters()
+```
+
+- **PKCE device-binding (R13/R17).** Every call above is transparently
+  bound to a fresh PKCE verifier/challenge pair minted in `init()` and held
+  ONLY in memory for this `flow` instance — see
+  `HeadlessRecoveryFlowCore`'s own doc comment for exactly what's sent
+  where. Nothing you need to do — it's on by default.
+- **In-memory only (R15/R16).** Don't hold a reference to `flow` anywhere
+  you persist (Redux-persist, `AsyncStorage`, a global singleton written to
+  disk) — treat it exactly like you'd treat a variable holding a bearer
+  token, because structurally that's what its private state is. Store only
+  the caller-facing `snapshot` (or a reference/correlation id you mint
+  yourself) if you need to survive a re-render; never serialize `flow`.
+- **App Links / Universal Links only, if your tenant's journey ever adds a
+  deep-link leg (R12).** Today's `recover-account-credential-aware` journey
+  drives entirely through in-app step submission (typed codes/email
+  confirmation) — there is no deep-link return leg to wire. If a FUTURE
+  step type introduces one (an emailed recovery link, mirroring magic
+  link), gate it with `createRecoveryReturnListener` (exported from this
+  package) instead of the general `Linking`/`createReactNativeNavigation`
+  adapter — it accepts ONLY `https://` App/Universal Links for that leg,
+  never a bare custom scheme, unlike the general OIDC/social-login redirect
+  above (which is fine with one because PKCE already covers it):
+
+  ```ts
+  import { createRecoveryReturnListener } from "@jummon/auth-react-native";
+
+  const unsubscribe = createRecoveryReturnListener(
+    Linking,
+    (url) => url.includes("/recover"), // scope to your own recovery-return path
+    {
+      onRecoveryReturn: (url) => {
+        /* resume whatever this future step type needs */
+      },
+      onRejectedLink: (url, error) => {
+        // A rejection here is a live scheme-hijack signal (T16) — log/alert,
+        // never retry with the rejected URL.
+      },
+    },
+  );
+  ```
+
+- **Recovery codes (backup codes), self-service.** `generateRecoveryCodes()`/
+  `hasUnredeemedRecoveryCodes()` on the client (same names as the web
+  package) are for an ALREADY-AUTHENTICATED user managing their OWN backup
+  codes — separate from the unauthenticated `flow` above, no Recovery Grant
+  involved:
+
+  ```ts
+  const { codes } = await client.generateRecoveryCodes(); // ALWAYS replaces the whole set — display exactly once, never re-fetchable
+  const hasCodes = await client.hasUnredeemedRecoveryCodes();
+  ```
+
 ## Storage split
 
 - Non-secret, short-lived flow-resume state → `AsyncStorage`.

@@ -1,10 +1,15 @@
 import { JummonAuthError } from "../errors";
-import type { PlatformWebAuthn } from "./platform/types";
+import type { PlatformCrypto, PlatformWebAuthn } from "./platform/types";
 import { browserWebAuthn } from "../platform/browser/webauthn";
+import { browserCrypto } from "../platform/browser/crypto";
+import { generatePkcePair } from "./platform/pkce";
 import {
   runRecoveryPasskeyCeremony,
   type RecoveryPasskeyChallenge,
 } from "../internal/recoveryPasskeyEnrollment";
+
+/** `POST /dynamic/executionflows/steps` — the ONLY path that ever needs the PKCE verifier attached (see `request()`'s doc comment). */
+const STEPS_PATH = "/dynamic/executionflows/steps";
 
 /**
  * Platform-agnostic driver for the credential-type-aware account-recovery
@@ -35,10 +40,45 @@ import {
  * flow persistence across app backgrounding (`../core/flowPersistence.ts`
  * mirrors a DIFFERENT, lower-stakes case per design §11.2's own warning —
  * a recovery token/context must never be persisted to disk, threat model
- * R15/R16), the mobile deep-link/Universal-Link entry point (R12), and the
- * PKCE device-binding for redemption (R13/R14/R17). This class only
- * implements the generic step-driver + native passkey ceremony the design
- * names as "purely SDK-side" work.
+ * R15/R16) and R14's cross-device numeric-code exchange (needs a dedicated
+ * dynamic-flows endpoint this SDK-only pass doesn't add — see the mobile
+ * parity dispatch's own report for the filed follow-up). The mobile
+ * deep-link/Universal-Link entry point (R12) is `@jummon/auth-react-native`'s
+ * `createRecoveryReturnListener` (`packages/react-native/src/adapters/
+ * navigation.ts`) — SEPARATE from this class, which never touches
+ * `Linking`. PKCE device-binding for redemption (R13/R17) IS built HERE —
+ * see below.
+ *
+ * **PKCE device-binding (threat model §3.5 R13/R17).** {@link init} mints a
+ * fresh RFC 7636 verifier/challenge pair via the injected `PlatformCrypto`
+ * (`generatePkcePair`, the SAME primitive `HeadlessAuthFlowCore.start()`
+ * uses for the OIDC leg) — the CHALLENGE goes out in the init request body
+ * (`code_challenge`/`code_challenge_method: "S256"`), the verifier is kept
+ * ONLY in the `#codeVerifier` private field and is attached automatically
+ * to every subsequent step submission ({@link request}'s own doc comment
+ * explains why every submit, not just a hand-picked "the redeem step").
+ * Once `dynamic-flows` is updated to relay `code_challenge` into its
+ * Recovery Grant `Mint` S2S call and `code_verifier` into whichever step
+ * finishes the ceremony (`jummon-auth-engine`'s `recoverygrant.Usecase`
+ * already enforces the match fail-closed once a challenge is present — see
+ * that repo's `internal/recoverygrant/recoverygrant.go`), an intercepted
+ * grant id/deep link alone becomes unredeemable without also holding this
+ * verifier, which never leaves the initiating device (R17/R19). Until that
+ * `dynamic-flows` plumbing lands, these two extra fields are inert but
+ * harmless additions to the wire body — no behavior change for a backend
+ * that doesn't read them yet.
+ *
+ * **In-memory only (R15/R16).** `#token`/`#codeVerifier` are TRUE private
+ * class fields (`#`, not TypeScript's `private` keyword) — they are not own
+ * enumerable properties, so `JSON.stringify(flow)`/`{...flow}`/
+ * `Object.keys(flow)` can never surface them. This class also never accepts
+ * a storage adapter of any kind — there is structurally no code path by
+ * which a recovery token or its verifier could reach `AsyncStorage`, a
+ * plain file, or `flowPersistence.ts`'s resume mechanism (which is for the
+ * unrelated, lower-stakes OIDC auth flow). **Contract for integrators:**
+ * never wrap an instance of this class (or hold a reference to it) in
+ * anything you persist — hold it only for the lifetime of the recovery UI,
+ * and let it be garbage-collected once the flow reaches `"done"`/`"error"`.
  */
 export interface HeadlessRecoveryFlowOptions {
   /** Host (no scheme, no trailing slash) where `iam-dynamic-flows`' execution-flow API is externally reachable. */
@@ -114,22 +154,43 @@ interface ExecutionFlowInitEnvelope {
 }
 
 export class HeadlessRecoveryFlowCore {
-  private token: string | null = null;
+  // TRUE private fields (`#`) — see the class doc comment's "In-memory
+  // only (R15/R16)" section for why this specifically (not TypeScript's
+  // `private` keyword, which compiles to a normal enumerable property).
+  #token: string | null = null;
+  #codeVerifier: string | null = null;
 
   constructor(
     private readonly opts: HeadlessRecoveryFlowOptions,
     private readonly webauthn: PlatformWebAuthn = browserWebAuthn,
+    private readonly crypto: PlatformCrypto = browserCrypto,
   ) {}
 
-  /** Starts a fresh recovery execution — `POST /dynamic/executionflows`. */
+  /**
+   * Starts a fresh recovery execution — `POST /dynamic/executionflows`.
+   * Mints this flow's PKCE pair (threat model §3.5 R13/R17, class doc
+   * comment) BEFORE the network call — the verifier never leaves this
+   * instance, only the challenge goes out on the wire.
+   */
   async init(): Promise<HeadlessRecoveryFlowSnapshot> {
+    let codeChallenge: string;
+    try {
+      const pair = await generatePkcePair(this.crypto);
+      this.#codeVerifier = pair.codeVerifier;
+      codeChallenge = pair.codeChallenge;
+    } catch (err) {
+      throw new JummonAuthError("unknown", "Could not generate the recovery flow's PKCE device-binding pair.", err);
+    }
+
     const envelope = await this.request<ExecutionFlowInitEnvelope>("POST", "/dynamic/executionflows", {
       flow_ref: this.opts.flowRef,
       client_id: this.opts.clientId,
       redirect_uri: this.opts.redirectUri,
       reference_url: this.opts.referenceUrl,
+      code_challenge: codeChallenge,
+      code_challenge_method: "S256",
     });
-    this.token = envelope.token;
+    this.#token = envelope.token;
     // The init envelope's current_step is the bare ref (ExecutionFlowDto),
     // not the richer StepResponse shape submit()/current() return — a
     // separate GET is what the FIRST step's actual `data` payload comes
@@ -246,8 +307,13 @@ export class HeadlessRecoveryFlowCore {
     envelope: ExecutionFlowStepEnvelope,
     hopsRemaining = HeadlessRecoveryFlowCore.maxAutoProceedHops,
   ): Promise<HeadlessRecoveryFlowSnapshot> {
-    this.token = envelope.next_token || this.token;
+    this.#token = envelope.next_token || this.#token;
     if (envelope.done) {
+      // R15/R16 hygiene: once the flow is genuinely finished, the
+      // verifier's job is done — drop it rather than let it linger in
+      // memory for the (garbage-collectable but not yet collected)
+      // lifetime of this instance.
+      this.#codeVerifier = null;
       return { status: "done", stepRef: null, data: envelope.data ?? null, error: null };
     }
 
@@ -286,14 +352,31 @@ export class HeadlessRecoveryFlowCore {
   /** Safety cap on transparent auto-proceed recursion — see {@link toSnapshot}. */
   private static readonly maxAutoProceedHops = 5;
 
+  /**
+   * threat model §3.5 R13's "the eventual redeem call must present the
+   * verifier" — attached transparently to EVERY POST to `STEPS_PATH`
+   * (`/dynamic/executionflows/steps`), not just a hand-picked "this one is
+   * the redeem step": the generic step-driver shape this class is built
+   * around (class doc comment) means the core has no reliable, forward-
+   * compatible way to know structurally which `stepRef` is the terminal
+   * credential-mutation one for a given tenant's authored recovery journey
+   * (Flow Studio can reorder/relabel steps). Sending the verifier on every
+   * submit is cheap (one extra ~43-char field) and lets WHICHEVER step
+   * `dynamic-flows`/`jummon-auth-engine` eventually gate on it — see the
+   * class doc comment's "PKCE device-binding" section.
+   */
   private async request<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
     const host = this.opts.baseHost.trim().replace(/\/+$/, "");
     const headers: Record<string, string> = { Accept: "application/json" };
-    if (body !== undefined) {
+    const outboundBody =
+      body !== undefined && path === STEPS_PATH && this.#codeVerifier
+        ? { ...(body as Record<string, unknown>), code_verifier: this.#codeVerifier }
+        : body;
+    if (outboundBody !== undefined) {
       headers["Content-Type"] = "application/json";
     }
-    if (this.token) {
-      headers["x-flow-token"] = this.token;
+    if (this.#token) {
+      headers["x-flow-token"] = this.#token;
     }
 
     let response: Response;
@@ -301,7 +384,7 @@ export class HeadlessRecoveryFlowCore {
       response = await fetch(`https://${host}${path}`, {
         method,
         headers,
-        body: body !== undefined ? JSON.stringify(body) : undefined,
+        body: outboundBody !== undefined ? JSON.stringify(outboundBody) : undefined,
         // Bearer, not a cookie — same rationale as HeadlessTransport
         // (../flow/transport.ts) and passkeyEnrollment.ts's request(): no
         // shared cookie jar with this origin, and design §3.2's own

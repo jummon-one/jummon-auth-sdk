@@ -46,6 +46,11 @@ describe("HeadlessRecoveryFlowCore", () => {
     expect(initUrl).toBe("https://dynamic.jummon.dev/dynamic/executionflows");
     const initBody = JSON.parse(initInit.body as string) as Record<string, unknown>;
     expect(initBody.flow_ref).toBe("recover-account-credential-aware");
+    // threat model §3.5 R13 — init() mints and sends the PKCE CHALLENGE
+    // only, never the verifier.
+    expect(initBody.code_challenge).toEqual(expect.any(String));
+    expect(initBody.code_challenge_method).toBe("S256");
+    expect(initBody.code_verifier).toBeUndefined();
     // No token exists yet at init — the first call must never send a stale
     // or undefined x-flow-token header.
     expect((initInit.headers as Record<string, string>)["x-flow-token"]).toBeUndefined();
@@ -82,7 +87,12 @@ describe("HeadlessRecoveryFlowCore", () => {
     // next_token) before submit() runs — the header must reflect the LATEST
     // rotation, never a stale value from init().
     expect((submitInit.headers as Record<string, string>)["x-flow-token"]).toBe("token-2");
-    expect(JSON.parse(submitInit.body as string)).toEqual({ email: "user@example.com" });
+    // threat model §3.5 R13 — every step submit carries the PKCE verifier
+    // minted at init(), transparently, alongside the caller's own body.
+    const submitBody = JSON.parse(submitInit.body as string) as Record<string, unknown>;
+    expect(submitBody.email).toBe("user@example.com");
+    expect(submitBody.code_verifier).toEqual(expect.any(String));
+    expect((submitBody.code_verifier as string).length).toBeGreaterThanOrEqual(43);
   });
 
   // issue #163/#165 Wave 3
@@ -109,7 +119,9 @@ describe("HeadlessRecoveryFlowCore", () => {
 
     expect(snapshot.stepRef).toBe("select-credential-form");
     const [, submitInit] = fetchMock.mock.calls[2] as [string, RequestInit];
-    expect(JSON.parse(submitInit.body as string)).toEqual({ code: "ABCD-1234" });
+    const body = JSON.parse(submitInit.body as string) as Record<string, unknown>;
+    expect(body.code).toBe("ABCD-1234");
+    expect(body.code_verifier).toEqual(expect.any(String));
   });
 
   // account-recovery masked-hints/confirm-partial build
@@ -136,7 +148,9 @@ describe("HeadlessRecoveryFlowCore", () => {
 
     expect(snapshot.stepRef).toBe("validate-recovery-form");
     const [, submitInit] = fetchMock.mock.calls[2] as [string, RequestInit];
-    expect(JSON.parse(submitInit.body as string)).toEqual({ partial: "4821" });
+    const body = JSON.parse(submitInit.body as string) as Record<string, unknown>;
+    expect(body.partial).toBe("4821");
+    expect(body.code_verifier).toEqual(expect.any(String));
   });
 
   it("confirmPartial(): a mismatch resolves IDENTICALLY to a match — no error, same advance", async () => {
@@ -201,7 +215,12 @@ describe("HeadlessRecoveryFlowCore", () => {
       // caller would have had to trigger itself.
       expect(fetchMock).toHaveBeenCalledTimes(3);
       const [, autoSubmitInit] = fetchMock.mock.calls[2] as [string, RequestInit];
-      expect(JSON.parse(autoSubmitInit.body as string)).toEqual({ option: "whatsapp" });
+      const body = JSON.parse(autoSubmitInit.body as string) as Record<string, unknown>;
+      expect(body.option).toBe("whatsapp");
+      // Even the transparently-issued auto-proceed submit carries the
+      // verifier — it goes through the same request() path as every other
+      // step submission (R13's "every step submit", not a hand-picked one).
+      expect(body.code_verifier).toEqual(expect.any(String));
     });
 
     it("2+ channels never auto-proceeds — the picker step is returned as-is", async () => {
@@ -330,6 +349,117 @@ describe("HeadlessRecoveryFlowCore", () => {
       expect(body.ceremony_id).toBe("ceremony-1");
       expect(body.name).toBe("My phone");
       expect(body).toHaveProperty("attestation");
+    });
+  });
+
+  // threat model §3.5 R13/R17 — PKCE device-binding
+  describe("PKCE device-binding (R13/R17)", () => {
+    it("each init() mints a FRESH verifier/challenge pair — never reused across flow instances", async () => {
+      const coreA = new HeadlessRecoveryFlowCore({ baseHost: "dynamic.jummon.dev", flowRef: "recover" });
+      const coreB = new HeadlessRecoveryFlowCore({ baseHost: "dynamic.jummon.dev", flowRef: "recover" });
+
+      fetchMock
+        .mockResolvedValueOnce(new Response(JSON.stringify({ token: "t1", current_step: "x" }), { status: 201 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify(stepEnvelope({ data: {} })), { status: 200 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ token: "t2", current_step: "x" }), { status: 201 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify(stepEnvelope({ data: {} })), { status: 200 }));
+
+      await coreA.init();
+      await coreB.init();
+
+      const challengeA = (JSON.parse((fetchMock.mock.calls[0] as [string, RequestInit])[1].body as string) as Record<string, unknown>)
+        .code_challenge;
+      const challengeB = (JSON.parse((fetchMock.mock.calls[2] as [string, RequestInit])[1].body as string) as Record<string, unknown>)
+        .code_challenge;
+      expect(challengeA).not.toBe(challengeB);
+    });
+
+    it("submit() attaches the SAME verifier init() minted, unchanged across the whole flow", async () => {
+      fetchMock
+        .mockResolvedValueOnce(new Response(JSON.stringify({ token: "token-1", current_step: "x" }), { status: 201 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify(stepEnvelope({ current_step: { step: { ref: "step-a" } } })), { status: 200 }))
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify(stepEnvelope({ next_token: "token-3", current_step: { step: { ref: "step-b" } } })), {
+            status: 200,
+          }),
+        )
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify(stepEnvelope({ next_token: "token-4", current_step: { step: { ref: "step-c" } } })), {
+            status: 200,
+          }),
+        );
+
+      await core.init();
+      await core.submit({ a: 1 });
+      await core.submit({ b: 2 });
+
+      const verifier1 = (JSON.parse((fetchMock.mock.calls[2] as [string, RequestInit])[1].body as string) as Record<string, unknown>)
+        .code_verifier;
+      const verifier2 = (JSON.parse((fetchMock.mock.calls[3] as [string, RequestInit])[1].body as string) as Record<string, unknown>)
+        .code_verifier;
+      expect(verifier1).toBe(verifier2);
+      expect(verifier1).toEqual(expect.any(String));
+    });
+
+    it("current() (GET, no body) never sends a code_verifier field at all", async () => {
+      fetchMock
+        .mockResolvedValueOnce(new Response(JSON.stringify({ token: "token-1", current_step: "x" }), { status: 201 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify(stepEnvelope({ data: {} })), { status: 200 }));
+
+      await core.init();
+
+      const [, currentInit] = fetchMock.mock.calls[1] as [string, RequestInit];
+      expect(currentInit.body).toBeUndefined();
+      expect(currentInit.method).toBe("GET");
+    });
+  });
+
+  // threat model §3.5 R15/R16 — in-memory only, never persisted
+  describe("in-memory only (R15/R16)", () => {
+    it("the flow token and PKCE verifier are TRUE private (#) fields — never own enumerable properties, unlike opts/adapters", async () => {
+      fetchMock
+        .mockResolvedValueOnce(new Response(JSON.stringify({ token: "super-secret-token", current_step: "x" }), { status: 201 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify(stepEnvelope({ data: {} })), { status: 200 }));
+
+      await core.init();
+
+      // A naive integrator who accidentally JSON.stringify()s / spreads /
+      // AsyncStorage.setItem()s the whole flow instance (instead of just
+      // its public HeadlessRecoveryFlowSnapshot) must NEVER leak the
+      // bearer token or the PKCE verifier this way — `#`-private fields are
+      // not own enumerable properties, unlike the constructor-injected
+      // `opts`/`webauthn`/`crypto` (non-secret config/adapters, TS
+      // `private` — still enumerable at runtime, which is fine, they never
+      // held a token or verifier value in the first place).
+      expect(Object.keys(core)).not.toContain("token");
+      expect(Object.keys(core)).not.toContain("codeVerifier");
+      const serialized = JSON.stringify(core);
+      expect(serialized).not.toContain("super-secret-token");
+      const codeVerifierUsed = (
+        JSON.parse(
+          (fetchMock.mock.calls[0] as [string, RequestInit])[1].body as string,
+        ) as { code_challenge: string }
+      ).code_challenge;
+      expect(serialized).not.toContain(codeVerifierUsed); // sanity: challenge itself isn't the verifier either
+    });
+
+    it('a completed ("done") flow drops its PKCE verifier from memory — the NEXT submit (if any) would carry none', async () => {
+      fetchMock
+        .mockResolvedValueOnce(new Response(JSON.stringify({ token: "token-1", current_step: "x" }), { status: 201 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ done: true, next_token: "", data: {} }), { status: 200 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify(stepEnvelope({ data: {} })), { status: 200 }));
+
+      const snapshot = await core.init();
+      expect(snapshot.status).toBe("done");
+
+      // Calling submit() after "done" is a caller misuse the class doesn't
+      // forbid outright (no flow_token invalidation check here — dynamic-
+      // flows itself rejects a consumed token), but the hygiene contract
+      // still holds: no verifier value is left to attach.
+      await core.submit({ whatever: true });
+      const [, submitInit] = fetchMock.mock.calls[2] as [string, RequestInit];
+      const body = JSON.parse(submitInit.body as string) as Record<string, unknown>;
+      expect(body.code_verifier).toBeUndefined();
     });
   });
 });

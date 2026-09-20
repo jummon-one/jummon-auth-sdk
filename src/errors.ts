@@ -41,6 +41,8 @@ export type JummonAuthErrorCode =
   | "cors_origin_rejected"
   /** Terminal `authenticated` envelope carried a `code`, but this JS realm lost `code_verifier` (e.g. a non-social reload mid-flow) — distinct from "no code at all" (`unknown`). Recovery: call `resume()`, or restart with `start()`. */
   | "pkce_verifier_lost"
+  /** `@jummon/auth-react-native`'s `createRecoveryReturnListener` (`packages/react-native/src/adapters/navigation.ts`, threat model §3.5 R12) rejected a URL that claimed to resume/foreground the app for an account-recovery return leg but wasn't an OS-verified App Link (Android) / Universal Link (iOS) — a bare custom-scheme URL (`myapp://...`) for THIS specific leg, unlike the general OIDC/social-login redirect, which is allowed to use one (RFC 8252 + PKCE already defends that leg). Never silently ignored — always surfaced via `onRejectedLink`/this error so the integrator can alert/log it (a real rejection is a live scheme-hijack signal, T16). */
+  | "recovery_link_not_os_verified"
   | "unknown";
 
 /**

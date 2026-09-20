@@ -1,18 +1,24 @@
 import {
   HeadlessAuthFlowCore,
   HeadlessEngineCore,
+  HeadlessRecoveryFlowCore,
   JummonAuthError,
   beginOtpEnrollment,
   confirmOtpEnrollment,
   enrollPasskey,
+  generateRecoveryCodesSelf,
+  getRecoveryCodesSelfStatus,
   setPasswordSelfService,
   DEFAULT_API_HOST,
   type AuthState,
   type HeadlessAuthFlow,
+  type HeadlessRecoveryFlowOptions,
   type JummonAuthOptions,
   type JummonUser,
   type OtpEnrollmentChallenge,
   type PasskeyRegistrationResult,
+  type PlatformWebAuthn,
+  type RecoveryCodesGenerated,
   type SignInOptions,
   type SignOutOptions,
 } from "@jummon/auth/core";
@@ -64,6 +70,32 @@ export interface JummonAuthReactNativeClient {
   setPassword(password: string, confirmationPassword: string): Promise<void>;
   beginOtpEnroll(): Promise<OtpEnrollmentChallenge>;
   confirmOtpEnroll(otp: string): Promise<void>;
+  /** Same standalone, post-login backup-code self-service as the web client's `generateRecoveryCodes()`/`hasUnredeemedRecoveryCodes()` — mobile parity item #5. ALWAYS replaces the caller's whole set (never "add codes"); see `@jummon/auth/core`'s `generateRecoveryCodesSelf` doc comment. */
+  generateRecoveryCodes(): Promise<RecoveryCodesGenerated>;
+  hasUnredeemedRecoveryCodes(): Promise<boolean>;
+  /**
+   * First-class RN entrypoint into the credential-type-aware account-
+   * recovery journey (mobile parity item #4) — wires `HeadlessRecoveryFlowCore`
+   * with this client's own RN adapters (`crypto` for the PKCE device-
+   * binding pair, threat model §3.5 R13/R17; `webauthn` for {@link
+   * HeadlessRecoveryFlowCore.enrollPasskey}, which throws
+   * `passkey_origin_unsupported` at call time if `nativeDeps.passkey` was
+   * never supplied — same posture as {@link registerPasskey}, never a
+   * silent fallback to a browser-only WebAuthn implementation that would
+   * crash on `navigator`).
+   *
+   * `options.baseHost` is still caller-supplied (unresolved
+   * infra/gateway-routing question, `HeadlessRecoveryFlowCore`'s own doc
+   * comment) — this method does not default it.
+   *
+   * Pair with `@jummon/auth-react-native`'s `createRecoveryReturnListener`
+   * (`./adapters/navigation.ts`) for the R12 App-Link/Universal-Link-gated
+   * deep-link return leg, if the tenant's recovery journey uses one
+   * (today's `recover-account-credential-aware` journey drives entirely
+   * through in-app step submission — no deep link leg exists yet, see that
+   * function's own doc comment).
+   */
+  startRecoveryFlow(options: HeadlessRecoveryFlowOptions): HeadlessRecoveryFlowCore;
 }
 
 /**
@@ -101,7 +133,48 @@ export function createJummonAuthReactNative(
       setPasswordViaEngine(engine, options, password, confirmationPassword),
     beginOtpEnroll: () => beginOtpEnrollViaEngine(engine, options),
     confirmOtpEnroll: (otp) => confirmOtpEnrollViaEngine(engine, options, otp),
+    generateRecoveryCodes: () => generateRecoveryCodesViaEngine(engine, options),
+    hasUnredeemedRecoveryCodes: () => hasUnredeemedRecoveryCodesViaEngine(engine, options),
+    startRecoveryFlow: (recoveryOptions) =>
+      new HeadlessRecoveryFlowCore(recoveryOptions, adapters.webauthn ?? unsupportedWebAuthn(), adapters.crypto),
   };
+}
+
+/**
+ * A `PlatformWebAuthn` that never touches `navigator` — safe to always
+ * construct (unlike falling through to `HeadlessRecoveryFlowCore`'s own
+ * `browserWebAuthn` default, which would crash reaching for `navigator.
+ * credentials` on RN). Only `enrollPasskey()`'s `create()`/`get()` calls
+ * ever reach this — every other recovery step (`init`/`current`/`submit`/
+ * `redeemRecoveryCode`/`confirmPartial`) never touches `webauthn` at all,
+ * so a tenant/app that never uses passkey-recovery is unaffected by not
+ * configuring `nativeDeps.passkey`.
+ */
+function unsupportedWebAuthn(): PlatformWebAuthn {
+  const fail = (): never => {
+    throw new JummonAuthError(
+      "passkey_origin_unsupported",
+      "startRecoveryFlow().enrollPasskey() requires a `passkey` adapter — pass `passkey: createReactNativeWebAuthn(...)`-worthy " +
+        "deps (a react-native-passkey-shaped object) to createReactNativePlatformAdapters()/createJummonAuthReactNative().",
+    );
+  };
+  return { isSupported: () => false, create: () => fail(), get: () => fail() };
+}
+
+async function generateRecoveryCodesViaEngine(
+  engine: HeadlessEngineCore,
+  options: ReactNativeAuthOptions,
+): Promise<RecoveryCodesGenerated> {
+  const accessToken = await requireAccessToken(engine, "generateRecoveryCodes()");
+  return generateRecoveryCodesSelf(accessToken, { apiHost: options.apiHost ?? DEFAULT_API_HOST });
+}
+
+async function hasUnredeemedRecoveryCodesViaEngine(
+  engine: HeadlessEngineCore,
+  options: ReactNativeAuthOptions,
+): Promise<boolean> {
+  const accessToken = await requireAccessToken(engine, "hasUnredeemedRecoveryCodes()");
+  return getRecoveryCodesSelfStatus(accessToken, { apiHost: options.apiHost ?? DEFAULT_API_HOST });
 }
 
 async function registerPasskeyViaEngine(

@@ -125,6 +125,19 @@ export {
   confirmOtpEnrollment,
   type OtpEnrollmentOptions,
 } from "../internal/otpEnrollment";
+// Standalone, post-login recovery-codes self-service (build #73) — pure
+// fetch-based, platform-agnostic already (same posture as
+// setPasswordSelfService/beginOtpEnrollment above), just never re-exported
+// from this subpath until now (mobile parity gap item #5). Was previously
+// browser-main-only via `../client.ts`'s `generateRecoveryCodes()`/
+// `hasUnredeemedRecoveryCodes()` — `@jummon/auth-react-native`'s client
+// wires these same two functions the same way.
+export {
+  generateRecoveryCodesSelf,
+  getRecoveryCodesSelfStatus,
+  type RecoveryCodesEnrollmentOptions,
+} from "../internal/recoveryCodesEnrollment";
+export type { RecoveryCodesGenerated } from "../types";
 
 // Re-exported so a platform package can build the same `JummonUser`/
 // `AuthEngine` shapes and talk to the same wire without re-deriving them —

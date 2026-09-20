@@ -61,6 +61,9 @@ export {
   type ExpoCryptoLike,
   createReactNativeNavigation,
   type LinkingLike,
+  createRecoveryReturnListener,
+  isOsVerifiedRecoveryLink,
+  type RecoveryReturnLinkHandlers,
   createReactNativeWebAuthn,
   type ReactNativePasskeyLike,
   type PasskeyCreateRequest,
@@ -80,6 +83,17 @@ export type {
   OtpEnrollmentChallenge,
   PasskeyRegistrationResult,
   PlatformRiskSignals,
+  RecoveryCodesGenerated,
 } from "@jummon/auth/core";
 export { JummonAuthError } from "@jummon/auth/core";
 export type { JummonAuthErrorCode } from "@jummon/auth/core";
+
+// Credential-type-aware account recovery (mobile parity items #1/#2/#4) —
+// re-exported so an app calling `startRecoveryFlow()` doesn't need a
+// separate `@jummon/auth/core` import just for these types.
+export {
+  HeadlessRecoveryFlowCore,
+  type HeadlessRecoveryFlowOptions,
+  type HeadlessRecoveryFlowSnapshot,
+  type HeadlessRecoveryFlowStatus,
+} from "@jummon/auth/core";
