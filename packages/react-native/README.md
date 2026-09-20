@@ -176,6 +176,43 @@ snapshot = await flow.enrollPasskey(snapshot); // only once stepRef === "enroll-
   );
   ```
 
+  **This gate is a SCHEME check, not proof of OS verification.** The
+  filter behind it — `isHttpsRecoveryReturnScheme` — only checks that the
+  URL's protocol is `https:`. It CANNOT tell you whether the OS actually
+  performed Android Digital Asset Links verification or iOS Associated
+  Domains verification before routing the link to your app; that lives
+  entirely in your app's NATIVE configuration, outside anything this SDK
+  can see or query at runtime. If that native config is missing or
+  misconfigured, Android in particular can fall back to an app-picker
+  among any app that registered an unverified `https` intent-filter for
+  the same host — and `isHttpsRecoveryReturnScheme`/
+  `createRecoveryReturnListener` would still accept the link that reached
+  your app that way. Treat the JS-side gate as necessary but not
+  sufficient; R12's real guarantee is only as strong as this checklist:
+
+  - **Android** — publish `https://<your-domain>/.well-known/assetlinks.json`
+    declaring your app's package name + signing-cert SHA-256 fingerprint,
+    and set `android:autoVerify="true"` on the matching `<intent-filter>`
+    in `AndroidManifest.xml`. Verify it actually took with
+    `adb shell pm get-app-links <your.package.name>` (expect `verified`,
+    not `legacy_failure`/`ask`) — a silent failure here is exactly the gap
+    this SDK cannot detect.
+  - **iOS** — publish `https://<your-domain>/.well-known/apple-app-site-association`
+    (no file extension, served as `application/json`, no redirects) and
+    add the `applinks:<your-domain>` entry to the Associated Domains
+    capability in your app's entitlements. Test with a fresh install (iOS
+    caches the AASA fetch) and confirm the link opens your app directly,
+    not Safari.
+  - **Neither `LinkingLike` (this package's `Linking` shape) nor
+    `react-native-passkey`'s `Passkey` surface exposes the resolving app's
+    package name / team identifier at the JS layer today** — there is no
+    in-SDK way to cross-check "which app actually handled this link" after
+    the fact. If your native layer independently surfaces that (e.g. a
+    custom native module reading the Android `Intent`'s originating
+    package or iOS's association data), that's a stronger signal than
+    anything this SDK can give you, but it's your own native code, not a
+    `@jummon/auth-react-native` API.
+
 - **Recovery codes (backup codes), self-service.** `generateRecoveryCodes()`/
   `hasUnredeemedRecoveryCodes()` on the client (same names as the web
   package) are for an ALREADY-AUTHENTICATED user managing their OWN backup

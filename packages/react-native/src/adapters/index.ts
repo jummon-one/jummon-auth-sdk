@@ -46,7 +46,7 @@ export {
   createReactNativeNavigation,
   type LinkingLike,
   createRecoveryReturnListener,
-  isOsVerifiedRecoveryLink,
+  isHttpsRecoveryReturnScheme,
   type RecoveryReturnLinkHandlers,
 } from "./navigation";
 export {

@@ -62,7 +62,7 @@ export {
   createReactNativeNavigation,
   type LinkingLike,
   createRecoveryReturnListener,
-  isOsVerifiedRecoveryLink,
+  isHttpsRecoveryReturnScheme,
   type RecoveryReturnLinkHandlers,
   createReactNativeWebAuthn,
   type ReactNativePasskeyLike,

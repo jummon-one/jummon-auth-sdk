@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createReactNativeNavigation,
   createRecoveryReturnListener,
-  isOsVerifiedRecoveryLink,
+  isHttpsRecoveryReturnScheme,
   type LinkingLike,
 } from "./navigation";
 
@@ -61,23 +61,27 @@ describe("createReactNativeNavigation", () => {
 });
 
 // threat model §3.5 R12 — App Links / Universal Links only, for the
-// recovery-token-bearing return leg specifically.
-describe("isOsVerifiedRecoveryLink", () => {
+// recovery-token-bearing return leg specifically. This checks the URL
+// SCHEME ONLY — it is necessary but NOT SUFFICIENT for R12's actual
+// OS-verification guarantee, which depends on the integrator's native
+// config (assetlinks.json/AASA + autoVerify/Associated Domains); see the
+// function's own doc comment in navigation.ts.
+describe("isHttpsRecoveryReturnScheme", () => {
   it("accepts https:// (App Link / Universal Link shape)", () => {
-    expect(isOsVerifiedRecoveryLink("https://acme.app/recover?token=abc")).toBe(true);
+    expect(isHttpsRecoveryReturnScheme("https://acme.app/recover?token=abc")).toBe(true);
   });
 
   it("rejects a bare custom URL scheme", () => {
-    expect(isOsVerifiedRecoveryLink("myapp://recover?token=abc")).toBe(false);
-    expect(isOsVerifiedRecoveryLink("acme://recover?token=abc")).toBe(false);
+    expect(isHttpsRecoveryReturnScheme("myapp://recover?token=abc")).toBe(false);
+    expect(isHttpsRecoveryReturnScheme("acme://recover?token=abc")).toBe(false);
   });
 
   it("rejects http:// too — App/Universal Links are always https", () => {
-    expect(isOsVerifiedRecoveryLink("http://acme.app/recover?token=abc")).toBe(false);
+    expect(isHttpsRecoveryReturnScheme("http://acme.app/recover?token=abc")).toBe(false);
   });
 
   it("rejects a malformed URL rather than throwing", () => {
-    expect(isOsVerifiedRecoveryLink("not a url at all")).toBe(false);
+    expect(isHttpsRecoveryReturnScheme("not a url at all")).toBe(false);
   });
 });
 

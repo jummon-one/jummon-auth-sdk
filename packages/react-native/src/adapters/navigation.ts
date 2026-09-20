@@ -74,11 +74,27 @@ export function createReactNativeNavigation(linking: LinkingLike): PlatformNavig
  * equivalent binding until R13, so R12 raises its transport bar instead of
  * loosening the already-adequate one).
  *
- * `isOsVerifiedRecoveryLink` is exported standalone (pure, no `Linking`
- * dependency) so an integrator can also use it to gate their OWN routing
- * logic before ever constructing a listener.
+ * IMPORTANT — read this before trusting the name: this function checks the
+ * URL's SCHEME ONLY (`https:`). It is NECESSARY but NOT SUFFICIENT for R12's
+ * actual guarantee ("OS-verified App Link / Universal Link"). Whether the OS
+ * *actually* performed Android Digital Asset Links verification or iOS
+ * Associated Domains verification before routing the link to this app is
+ * decided entirely by the integrator's NATIVE configuration
+ * (`assetlinks.json` + the manifest's `android:autoVerify="true"`, iOS's
+ * `apple-app-site-association` + Associated Domains entitlement) — this SDK
+ * has no JS-visible signal for that and cannot query it at runtime. If that
+ * native config is missing or wrong, Android in particular can silently fall
+ * back to an app-picker/intent-chooser among ANY app that registered an
+ * unverified `https` intent-filter for the same host, and this function
+ * would still return `true` for the link that reached this app that way.
+ * See `packages/react-native/README.md`'s "Account recovery" section for
+ * the concrete native-config checklist this depends on.
+ *
+ * Exported standalone (pure, no `Linking` dependency) so an integrator can
+ * also use it to gate their OWN routing logic before ever constructing a
+ * listener.
  */
-export function isOsVerifiedRecoveryLink(url: string): boolean {
+export function isHttpsRecoveryReturnScheme(url: string): boolean {
   try {
     return new URL(url).protocol === "https:";
   } catch {
@@ -104,9 +120,11 @@ export interface RecoveryReturnLinkHandlers {
 /**
  * Wires `linking` (cold-start `getInitialURL()` + the `'url'` event) to
  * `handlers`, running EVERY candidate URL through
- * {@link isOsVerifiedRecoveryLink} before ever calling `onRecoveryReturn` —
- * see this module's own doc comment on why this is a separate listener
- * from `createReactNativeNavigation`, not a flag on it.
+ * {@link isHttpsRecoveryReturnScheme} before ever calling `onRecoveryReturn`
+ * — see this module's own doc comment on why this is a separate listener
+ * from `createReactNativeNavigation`, not a flag on it, and on why an
+ * `https:` scheme match is necessary but not sufficient for R12's actual
+ * OS-verification guarantee.
  *
  * `matchesRecoveryReturn` scopes which URLs this listener even considers a
  * recovery-return candidate at all (e.g. `(url) => url.startsWith(options.
@@ -128,7 +146,7 @@ export function createRecoveryReturnListener(
     if (!url || !matchesRecoveryReturn(url)) {
       return;
     }
-    if (!isOsVerifiedRecoveryLink(url)) {
+    if (!isHttpsRecoveryReturnScheme(url)) {
       handlers.onRejectedLink(
         url,
         new JummonAuthError(
