@@ -229,6 +229,27 @@ export class HeadlessAuthFlowCore implements HeadlessAuthFlow {
   private inFlight: Promise<HeadlessFlowSnapshot> | null = null;
   /** Guards `applyErrorOrRestart` against restarting a restart (see its doc comment). */
   private restartingAfterExpiry = false;
+  /**
+   * Double-exchange hardening — closes the "token was obtained but the app
+   * shows a login error" bug class. Holds the authorization `code` from the
+   * LAST successful `completeAuthenticated()` exchange, paired with the
+   * snapshot it produced. A later `completeAuthenticated()` call carrying
+   * this EXACT `code` again — a second `resume()` on foreground/remount, a
+   * re-poll() that happens to return the same terminal `authenticated`
+   * envelope, or (paired with the RN navigation adapter's `clearAuthParams()`
+   * fix) a stale deep link still sitting in `getCurrentUrl()` — re-emits
+   * `lastAuthenticatedSnapshot` instead of re-exchanging a single-use code,
+   * which would always fail `invalid_grant` at the token endpoint and
+   * incorrectly surface as a login error even though the FIRST exchange
+   * already established the session. Never explicitly reset: a fresh
+   * `start()`/sign-out cycle always gets a brand-new `code` from the
+   * backend, so the equality check simply stops matching on its own — this
+   * is about not RE-attempting a consumed code, never about weakening
+   * single-use-code enforcement (a genuinely different code still exchanges
+   * normally, and a genuinely first-time `invalid_grant` still surfaces).
+   */
+  private consumedAuthCode: string | null = null;
+  private lastAuthenticatedSnapshot: HeadlessFlowSnapshot | null = null;
 
   constructor(
     options: JummonAuthOptions,
@@ -710,6 +731,16 @@ export class HeadlessAuthFlowCore implements HeadlessAuthFlow {
   }
 
   private async completeAuthenticated(envelope: HeadlessAuthEnvelope): Promise<HeadlessFlowSnapshot> {
+    // Bug 1 — double-code-exchange guard (see `consumedAuthCode`'s doc
+    // comment). Checked FIRST, before the `!envelope.code`/`!this.codeVerifier`
+    // guards below: a repeat delivery of an already-consumed code is a valid,
+    // already-completed sign-in regardless of whether this JS realm still
+    // holds the (now-irrelevant) PKCE verifier for it.
+    if (envelope.code && envelope.code === this.consumedAuthCode && this.lastAuthenticatedSnapshot) {
+      this.emit(this.lastAuthenticatedSnapshot);
+      return this.lastAuthenticatedSnapshot;
+    }
+
     if (!envelope.code) {
       return this.applyError(
         new JummonAuthError("unknown", "Auth API returned `authenticated` with no authorization code."),
@@ -739,7 +770,20 @@ export class HeadlessAuthFlowCore implements HeadlessAuthFlow {
         codeVerifier: this.codeVerifier,
       });
       const user = this.sink.completeSignIn(tokens);
-      await clearStoredFlowAsync(this.adapters.storage, this.tenant, this.clientId);
+      // Bug 3 — post-sign-in cleanup must be best-effort: the session is
+      // ALREADY live (`sink.completeSignIn()` above already emitted
+      // `authenticated` to `onAuthStateChanged` subscribers via the sink),
+      // so a storage-cleanup failure here must never fall through to the
+      // `catch` below and downgrade an already-successful sign-in to a
+      // login error. `clearStoredFlowAsync()` itself never throws (its own
+      // doc comment) — this inline try/catch is defense-in-depth against
+      // that guarantee changing later, not a workaround for a bug in it
+      // today.
+      try {
+        await clearStoredFlowAsync(this.adapters.storage, this.tenant, this.clientId);
+      } catch {
+        // best-effort — see comment above.
+      }
       const next: HeadlessFlowSnapshot = {
         status: "authenticated",
         flowToken: envelope.flow_token,
@@ -753,6 +797,10 @@ export class HeadlessAuthFlowCore implements HeadlessAuthFlow {
         error: null,
         user,
       };
+      // Recorded before emit() so the guard at the top of this method is
+      // live for the very next call, however soon it arrives (Bug 1).
+      this.consumedAuthCode = envelope.code;
+      this.lastAuthenticatedSnapshot = next;
       this.emit(next);
       return next;
     } catch (err) {
