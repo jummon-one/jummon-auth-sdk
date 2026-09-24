@@ -32,11 +32,30 @@ export interface LinkingLike {
  * chooser / iOS `SFSafariViewController` under an Expo/RN wrapper), never an
  * in-app WebView, per the same rule the browser adapter's doc comment states
  * (Google and other IdPs block embedded-WebView OAuth outright).
- * `clearAuthParams()` is a no-op — there is no history/URL bar to strip
- * `code`/`state` from.
+ *
+ * `clearAuthParams()` has NO history/URL bar to strip `code`/`state` from —
+ * but it is NOT a no-op. Bug-class fix (see `core/headlessAuthFlowCore.ts`'s
+ * `consumedAuthCode` doc comment for the matching core-side guard): without
+ * this, `lastUrl` keeps holding the one-shot `code`/`state` from a
+ * social-login/deep-link return FOREVER, so a LATER `resume()` (app
+ * foreground / component remount) reads the exact same, already-consumed
+ * `code` off `getCurrentUrl()` again and drives a second, doomed
+ * `invalid_grant` exchange of a single-use authorization code — even though
+ * the FIRST exchange already established the session. `clearAuthParams()`
+ * therefore marks the current `lastUrl` as consumed; `getCurrentUrl()`
+ * withholds a URL once it's been marked. A genuinely FRESH deep link (a new
+ * `'url'` event, or a new cold start) always updates `lastUrl` and is
+ * returned normally — this only withholds the exact URL string that was
+ * already handed off.
  */
 export function createReactNativeNavigation(linking: LinkingLike): PlatformNavigation {
   let lastUrl: string | null = null;
+  /**
+   * Set by `clearAuthParams()` to whatever `lastUrl` was at that instant —
+   * the one-shot `code`/`state` it carried have already been read once and
+   * must not be handed back. See this function's doc comment.
+   */
+  let consumedUrl: string | null = null;
 
   void linking.getInitialURL().then((url) => {
     if (url) {
@@ -45,6 +64,12 @@ export function createReactNativeNavigation(linking: LinkingLike): PlatformNavig
   });
   linking.addEventListener("url", (event) => {
     lastUrl = event.url;
+    // A brand-new deep link always supersedes whatever was marked consumed
+    // — belt-and-suspenders alongside the `lastUrl !== consumedUrl` check
+    // below (which alone would already do the right thing whenever the new
+    // URL differs, but a fresh event should never be shadowed by a stale
+    // consumed marker regardless).
+    consumedUrl = null;
   });
 
   return {
@@ -52,11 +77,14 @@ export function createReactNativeNavigation(linking: LinkingLike): PlatformNavig
       void linking.openURL(url);
     },
     getCurrentUrl(): string | null {
-      return lastUrl;
+      return lastUrl !== null && lastUrl === consumedUrl ? null : lastUrl;
     },
     clearAuthParams(): void {
-      // No-op — no addressable URL bar/history to strip one-shot params
-      // from on this platform, see doc comment above.
+      // No address bar/history to strip one-shot params from on this
+      // platform — instead, forget them by marking the current `lastUrl` as
+      // consumed so a later `resume()` can't read the same `code`/`state`
+      // off it again. See this function's doc comment above.
+      consumedUrl = lastUrl;
     },
   };
 }
