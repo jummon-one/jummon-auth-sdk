@@ -24,13 +24,17 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "scripts/link-workspace-root.cjs"
   ],
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist",
+    "postinstall": "node scripts/link-workspace-root.cjs",
+    "pretypecheck": "node scripts/link-workspace-root.cjs",
+    "prebuild": "node scripts/link-workspace-root.cjs",
     "prepack": "node scripts/verify-no-file-deps.cjs",
     "test": "vitest run",
     "test:watch": "vitest"
