@@ -4,7 +4,7 @@ import { rotateDeviceId } from "./deviceId";
 import { AuthStateEmitter } from "../internal/authStateEmitter";
 import { fetchDiscoveryDocument, refreshAccessToken, revokeToken, type TokenResponse } from "../internal/tokenExchange";
 import { decodeJwtPayload } from "../jwt";
-import { buildJummonUser } from "../mapUser";
+import { buildJummonUser, buildJummonUserAsync } from "../mapUser";
 import type { AuthEngine, AuthState, JummonAuthOptions, JummonUser, SignInOptions, SignOutOptions } from "../types";
 import type { PlatformAdapters } from "./platform/types";
 
@@ -121,7 +121,7 @@ export class HeadlessEngineCore implements AuthEngine {
     if (!session || isExpired(session)) {
       return null;
     }
-    return this.mapSession(session);
+    return this.mapSessionAsync(session);
   }
 
   async getAccessToken(): Promise<string | null> {
@@ -146,7 +146,14 @@ export class HeadlessEngineCore implements AuthEngine {
         refreshToken: session.refresh_token,
       });
       const persisted = this.write(tokens);
-      this.emitter.emit({ status: "authenticated", user: this.mapSession(persisted) });
+      // Don't make a hot-path token refresh wait on a userinfo round trip —
+      // callers of getAccessToken() only need the token string back. The
+      // richer `authenticated` event (userinfo-enriched permissions, once
+      // available) still reaches onAuthStateChanged subscribers, just
+      // fire-and-forget, same pattern as RedirectEngine's onUserLoaded.
+      void this.mapSessionAsync(persisted).then((user) => {
+        this.emitter.emit({ status: "authenticated", user });
+      });
       return persisted.access_token;
     } catch (err) {
       throw err instanceof JummonAuthError
@@ -229,6 +236,22 @@ export class HeadlessEngineCore implements AuthEngine {
     const idClaims = decodeJwtPayload(session.id_token) ?? {};
     const accessClaims = decodeJwtPayload(session.access_token) ?? {};
     return buildJummonUser(idClaims, accessClaims, this.tenant);
+  }
+
+  /**
+   * Userinfo-enriched counterpart of `mapSession()` (issue #8's SDK
+   * migration) — PRIMARY source for `permissions`/`roles` is auth-engine's
+   * userinfo endpoint; `mapSession()`'s plain JWT decode stays the
+   * fallback when userinfo can't be reached (`buildJummonUserAsync()`'s own
+   * doc comment). Used by `getUser()`/the post-refresh emit in
+   * `getAccessToken()` — both already-async paths — never by
+   * `completeSignIn()`, which stays synchronous by contract (see this
+   * class's own doc comment) and keeps using the plain `mapSession()`.
+   */
+  private async mapSessionAsync(session: PersistedHeadlessSession): Promise<JummonUser> {
+    const idClaims = decodeJwtPayload(session.id_token) ?? {};
+    const accessClaims = decodeJwtPayload(session.access_token) ?? {};
+    return buildJummonUserAsync(idClaims, accessClaims, this.tenant, this.issuerHost, session.access_token);
   }
 
   private async read(): Promise<PersistedHeadlessSession | null> {

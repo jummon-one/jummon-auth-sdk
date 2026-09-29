@@ -8,7 +8,7 @@ export { buildAuthority, DEFAULT_ISSUER_HOST } from "./discovery";
 
 export { DEFAULT_API_HOST, isPasskeySupported } from "./internal/passkeyEnrollment";
 
-export type { HeadlessAuthFlow, HeadlessFlowSnapshot } from "./flow/headlessAuthFlow";
+export type { HeadlessAuthFlow, HeadlessFlowSnapshot, HeadlessStartOptions } from "./flow/headlessAuthFlow";
 export type {
   HeadlessAuthEnvelope,
   HeadlessErrorEnvelope,
@@ -48,6 +48,8 @@ export {
 export type {
   AuthEngine,
   AuthState,
+  CredentialListResult,
+  CredentialSummary,
   JummonAuthMode,
   JummonAuthOptions,
   JummonUser,
@@ -56,3 +58,7 @@ export type {
   SignInOptions,
   SignOutOptions,
 } from "./types";
+
+// #228 — the RFC 9470 step-up challenge carried as `err.cause` on a
+// `step_up_required` JummonAuthError off `removeCredential()`.
+export type { StepUpChallenge } from "./internal/credentialsSelfService";

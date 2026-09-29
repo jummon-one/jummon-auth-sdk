@@ -62,7 +62,13 @@ export class RedirectEngine implements AuthEngine {
     this.userManager = new UserManager(settings);
 
     const onUserLoaded = (oidcUser: User) => {
-      this.emit({ status: "authenticated", user: mapOidcUser(oidcUser, this.tenant) });
+      // Fire-and-forget: `mapOidcUser()` is async (userinfo round trip) but
+      // oidc-client-ts's UserLoaded event never awaits its handlers. It
+      // never rejects (`fetchRichClaims()`'s own doc comment) — no `.catch`
+      // needed to keep this event bus from seeing an unhandled rejection.
+      void mapOidcUser(oidcUser, this.tenant, this.issuerHost).then((user) => {
+        this.emit({ status: "authenticated", user });
+      });
     };
     const onSignedOut = () => this.emit({ status: "unauthenticated" });
 
@@ -109,7 +115,7 @@ export class RedirectEngine implements AuthEngine {
       );
     }
 
-    const user = mapOidcUser(oidcUser, this.tenant);
+    const user = await mapOidcUser(oidcUser, this.tenant, this.issuerHost);
     this.emit({ status: "authenticated", user });
     return user;
   }
@@ -158,7 +164,7 @@ export class RedirectEngine implements AuthEngine {
     if (!oidcUser || oidcUser.expired) {
       return null;
     }
-    return mapOidcUser(oidcUser, this.tenant);
+    return mapOidcUser(oidcUser, this.tenant, this.issuerHost);
   }
 
   async getAccessToken(): Promise<string | null> {

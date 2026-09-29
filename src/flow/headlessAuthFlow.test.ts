@@ -254,6 +254,71 @@ describe("HeadlessAuthFlow", () => {
     expect(startArgs.scope).toBe("openid email");
   });
 
+  // --- #5b: acr_values/max_age step-up plumbing on start() -----------------
+
+  describe("start({ acrValues, maxAge }) — #5b", () => {
+    it("forwards acr_values/max_age on the wire when supplied", async () => {
+      transportMock.start.mockResolvedValue(envelope());
+      const flow = createHeadlessAuthFlow(OPTIONS, sink);
+
+      await flow.start({ acrValues: "loa2", maxAge: 300 });
+
+      const startArgs = transportMock.start.mock.calls[0]?.[0] as Record<string, unknown>;
+      expect(startArgs.acr_values).toBe("loa2");
+      expect(startArgs.max_age).toBe(300);
+    });
+
+    it("absent acrValues/maxAge omits both fields — byte-for-byte the same request as before #5b", async () => {
+      transportMock.start.mockResolvedValue(envelope());
+      const flow = createHeadlessAuthFlow(OPTIONS, sink);
+
+      await flow.start();
+
+      const startArgs = transportMock.start.mock.calls[0]?.[0] as Record<string, unknown>;
+      // Both fields are `undefined` (not present as a non-undefined value) —
+      // `JSON.stringify` drops an `undefined` value, so the OUTBOUND wire
+      // body is byte-for-byte the same as before #5b even though the JS
+      // object itself technically carries the keys.
+      expect(startArgs.acr_values).toBeUndefined();
+      expect(startArgs.max_age).toBeUndefined();
+    });
+
+    it("accepts a space-delimited multi-token acrValues as long as every token is allowlisted", async () => {
+      transportMock.start.mockResolvedValue(envelope());
+      const flow = createHeadlessAuthFlow(OPTIONS, sink);
+
+      await flow.start({ acrValues: "loa1 loa2" });
+
+      const startArgs = transportMock.start.mock.calls[0]?.[0] as Record<string, unknown>;
+      expect(startArgs.acr_values).toBe("loa1 loa2");
+    });
+
+    it("an unrecognized acrValues token resolves to an invalid_options error snapshot without ever calling transport.start", async () => {
+      const flow = createHeadlessAuthFlow(OPTIONS, sink);
+
+      const snapshot = await flow.start({ acrValues: "not-a-real-acr" });
+
+      expect(snapshot.status).toBe("error");
+      expect(snapshot.error?.code).toBe("invalid_options");
+      expect(transportMock.start).not.toHaveBeenCalled();
+    });
+
+    it("a flow_expired auto-restart preserves the originally-requested acrValues/maxAge", async () => {
+      transportMock.start
+        .mockResolvedValueOnce(envelope({ flow_token: "ft-1" }))
+        .mockResolvedValueOnce(envelope({ flow_token: "ft-2" }));
+      transportMock.submit.mockRejectedValueOnce(new JummonAuthError("flow_expired", "flow expired"));
+      const flow = createHeadlessAuthFlow(OPTIONS, sink);
+      await flow.start({ acrValues: "loa2", maxAge: 300 });
+
+      await flow.submitPassword("jane@example.com", "hunter2");
+
+      const restartArgs = transportMock.start.mock.calls[1]?.[0] as Record<string, unknown>;
+      expect(restartArgs.acr_values).toBe("loa2");
+      expect(restartArgs.max_age).toBe(300);
+    });
+  });
+
   // --- Blocker #3: error shape (flow-level; wire parsing itself is transport.test.ts) --
 
   it("a transport error resolves to an `error` status snapshot instead of throwing out of submit", async () => {

@@ -13,6 +13,14 @@ export interface DiscoveryDocument {
    * the only source of truth for any endpoint).
    */
   revocation_endpoint?: string;
+  /**
+   * `POST /<tenant>/oidc/userinfo` — the "rich claims" source
+   * `richClaims.ts`'s `fetchRichClaims()` reads `permissions`/`roles` from
+   * (issue #8's SDK-side prerequisite: userinfo keeps carrying `permissions`
+   * even once the access-token JWT is slimmed). Every OIDC discovery doc
+   * advertises this per RFC — read from here, NEVER hardcoded.
+   */
+  userinfo_endpoint?: string;
   [key: string]: unknown;
 }
 

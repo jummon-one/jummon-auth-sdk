@@ -23,6 +23,7 @@ export {
   type HeadlessAuthFlow,
   type HeadlessFlowSnapshot,
   type HeadlessSessionSink,
+  type HeadlessStartOptions,
 } from "./headlessAuthFlowCore";
 export { HEADLESS_FLOW_STORAGE_PREFIX } from "./flowPersistence";
 export { DEVICE_ID_STORAGE_PREFIX, getOrCreateDeviceId, rotateDeviceId } from "./deviceId";
