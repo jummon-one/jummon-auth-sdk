@@ -112,8 +112,21 @@ jobs:
           fi
           echo "publishing ${{ needs.resolve.outputs.package_name }}@$pkg"
 
+      - name: Resolve npm dist-tag from the version (prerelease → next, stable → latest)
+        id: dist_tag
+        working-directory: ${{ needs.resolve.outputs.package_dir }}
+        run: |
+          if node -p "require('./package.json').version.includes('-')" | grep -q true; then
+            echo "tag=next" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=latest" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Publish to npm (trusted publishing + provenance)
         working-directory: ${{ needs.resolve.outputs.package_dir }}
-        run: npm publish --provenance --access public
+        run: npm publish --provenance --access public --tag ${{ steps.dist_tag.outputs.tag }}
         # No NODE_AUTH_TOKEN — auth comes from the OIDC id-token via the configured
         # Trusted Publisher for whichever package this release resolved to.
+        # --tag is EXPLICIT (never the bare npm-default-to-latest behavior): a version
+        # containing a prerelease identifier (e.g. 0.5.0-rc.0) publishes to `next`, so it
+        # can never silently become the default `npm install @jummon/auth` resolves to.
