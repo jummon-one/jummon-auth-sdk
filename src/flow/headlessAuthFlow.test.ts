@@ -4,7 +4,17 @@ import type { HeadlessAuthEnvelope } from "./types";
 
 vi.mock("./transport", () => ({ HeadlessTransport: vi.fn() }));
 vi.mock("../internal/tokenExchange", () => ({ exchangeAuthorizationCode: vi.fn() }));
+// Bug 3 regression coverage needs to force `clearStoredFlowAsync` to reject
+// (it never does in the real implementation — see its own doc comment —
+// this simulates that guarantee changing) while every other export
+// (persistFlow/readStoredFlow/clearStoredFlow, used by the real resume()/
+// storage-persistence tests elsewhere in this file) keeps its real behavior.
+vi.mock("../core/flowPersistence", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../core/flowPersistence")>();
+  return { ...actual, clearStoredFlowAsync: vi.fn(actual.clearStoredFlowAsync) };
+});
 
+import { clearStoredFlowAsync } from "../core/flowPersistence";
 import { exchangeAuthorizationCode } from "../internal/tokenExchange";
 import { createHeadlessAuthFlow, type HeadlessSessionSink } from "./headlessAuthFlow";
 import { HeadlessTransport } from "./transport";
@@ -48,6 +58,7 @@ describe("HeadlessAuthFlow", () => {
     (HeadlessTransport as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => transportMock);
     sink = { completeSignIn: vi.fn().mockReturnValue({ sub: "u1", tenant: "acme", roles: [], permissions: [], raw: {} }) };
     vi.mocked(exchangeAuthorizationCode).mockReset();
+    vi.mocked(clearStoredFlowAsync).mockClear();
     window.sessionStorage.clear();
     window.history.pushState(null, "", "/");
   });
@@ -273,6 +284,71 @@ describe("HeadlessAuthFlow", () => {
 
     const startArgs = transportMock.start.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(startArgs.scope).toBe("openid email");
+  });
+
+  // --- #5b: acr_values/max_age step-up plumbing on start() -----------------
+
+  describe("start({ acrValues, maxAge }) — #5b", () => {
+    it("forwards acr_values/max_age on the wire when supplied", async () => {
+      transportMock.start.mockResolvedValue(envelope());
+      const flow = createHeadlessAuthFlow(OPTIONS, sink);
+
+      await flow.start({ acrValues: "loa2", maxAge: 300 });
+
+      const startArgs = transportMock.start.mock.calls[0]?.[0] as Record<string, unknown>;
+      expect(startArgs.acr_values).toBe("loa2");
+      expect(startArgs.max_age).toBe(300);
+    });
+
+    it("absent acrValues/maxAge omits both fields — byte-for-byte the same request as before #5b", async () => {
+      transportMock.start.mockResolvedValue(envelope());
+      const flow = createHeadlessAuthFlow(OPTIONS, sink);
+
+      await flow.start();
+
+      const startArgs = transportMock.start.mock.calls[0]?.[0] as Record<string, unknown>;
+      // Both fields are `undefined` (not present as a non-undefined value) —
+      // `JSON.stringify` drops an `undefined` value, so the OUTBOUND wire
+      // body is byte-for-byte the same as before #5b even though the JS
+      // object itself technically carries the keys.
+      expect(startArgs.acr_values).toBeUndefined();
+      expect(startArgs.max_age).toBeUndefined();
+    });
+
+    it("accepts a space-delimited multi-token acrValues as long as every token is allowlisted", async () => {
+      transportMock.start.mockResolvedValue(envelope());
+      const flow = createHeadlessAuthFlow(OPTIONS, sink);
+
+      await flow.start({ acrValues: "loa1 loa2" });
+
+      const startArgs = transportMock.start.mock.calls[0]?.[0] as Record<string, unknown>;
+      expect(startArgs.acr_values).toBe("loa1 loa2");
+    });
+
+    it("an unrecognized acrValues token resolves to an invalid_options error snapshot without ever calling transport.start", async () => {
+      const flow = createHeadlessAuthFlow(OPTIONS, sink);
+
+      const snapshot = await flow.start({ acrValues: "not-a-real-acr" });
+
+      expect(snapshot.status).toBe("error");
+      expect(snapshot.error?.code).toBe("invalid_options");
+      expect(transportMock.start).not.toHaveBeenCalled();
+    });
+
+    it("a flow_expired auto-restart preserves the originally-requested acrValues/maxAge", async () => {
+      transportMock.start
+        .mockResolvedValueOnce(envelope({ flow_token: "ft-1" }))
+        .mockResolvedValueOnce(envelope({ flow_token: "ft-2" }));
+      transportMock.submit.mockRejectedValueOnce(new JummonAuthError("flow_expired", "flow expired"));
+      const flow = createHeadlessAuthFlow(OPTIONS, sink);
+      await flow.start({ acrValues: "loa2", maxAge: 300 });
+
+      await flow.submitPassword("jane@example.com", "hunter2");
+
+      const restartArgs = transportMock.start.mock.calls[1]?.[0] as Record<string, unknown>;
+      expect(restartArgs.acr_values).toBe("loa2");
+      expect(restartArgs.max_age).toBe(300);
+    });
   });
 
   // --- Blocker #3: error shape (flow-level; wire parsing itself is transport.test.ts) --
@@ -504,6 +580,80 @@ describe("HeadlessAuthFlow", () => {
     expect(snapshot.status).toBe("error");
     expect(snapshot.error?.code).toBe("pkce_verifier_lost");
     expect(exchangeAuthorizationCode).not.toHaveBeenCalled();
+  });
+
+  // --- "token obtained but login shows an error" hardening (bugs 1/2/3) ----
+
+  it("Bug 1: a repeat delivery of the same already-exchanged code (e.g. a re-poll() returning the same terminal envelope) re-emits the existing authenticated snapshot instead of re-exchanging it", async () => {
+    transportMock.start.mockResolvedValue(envelope());
+    transportMock.submit.mockResolvedValue(
+      envelope({ status: "authenticated", current_step: null, code: "auth-code", oidc_state: "state-1", data: {} }),
+    );
+    vi.mocked(exchangeAuthorizationCode).mockResolvedValue({
+      access_token: "at",
+      refresh_token: "rt",
+      id_token: "it",
+      token_type: "Bearer",
+      expires_in: 3600,
+    });
+    const flow = createHeadlessAuthFlow(OPTIONS, sink);
+    await flow.start();
+
+    const first = await flow.submitPassword("jane@example.com", "hunter2");
+    expect(first.status).toBe("authenticated");
+    expect(exchangeAuthorizationCode).toHaveBeenCalledTimes(1);
+
+    // The same terminal `authenticated` envelope (same `code`) arrives
+    // again — e.g. a foreground poll() that happens to hit the same
+    // terminal state. A naive re-exchange of a single-use code would fail
+    // `invalid_grant` here and surface as a login error despite the
+    // already-live session from the first exchange above.
+    transportMock.poll.mockResolvedValue(
+      envelope({ status: "authenticated", current_step: null, code: "auth-code", oidc_state: "state-1", data: {} }),
+    );
+    const second = await flow.poll();
+
+    expect(second.status).toBe("authenticated");
+    expect(second.error).toBeNull();
+    expect(second).toEqual(first); // re-emits the SAME snapshot, not a fresh one
+    expect(exchangeAuthorizationCode).toHaveBeenCalledTimes(1); // never re-exchanged
+    expect(sink.completeSignIn).toHaveBeenCalledTimes(1); // sink only notified once
+  });
+
+  it("Bug 1 does not mask a genuine first-attempt exchange failure — invalid_grant on the ACTUAL first exchange of a code still surfaces as an error", async () => {
+    transportMock.start.mockResolvedValue(envelope());
+    transportMock.submit.mockResolvedValue(
+      envelope({ status: "authenticated", current_step: null, code: "auth-code", oidc_state: "state-1", data: {} }),
+    );
+    vi.mocked(exchangeAuthorizationCode).mockRejectedValue(
+      new JummonAuthError("signin_failed", "invalid_grant"),
+    );
+    const flow = createHeadlessAuthFlow(OPTIONS, sink);
+    await flow.start();
+
+    const snapshot = await flow.submitPassword("jane@example.com", "hunter2");
+
+    expect(snapshot.status).toBe("error");
+    expect(snapshot.error?.code).toBe("signin_failed");
+    expect(sink.completeSignIn).not.toHaveBeenCalled();
+  });
+
+  it("Bug 3: a clearStoredFlowAsync failure AFTER completeSignIn never downgrades the already-successful sign-in to an error", async () => {
+    transportMock.start.mockResolvedValue(envelope());
+    transportMock.submit.mockResolvedValue(
+      envelope({ status: "authenticated", current_step: null, code: "auth-code", oidc_state: "state-1", data: {} }),
+    );
+    vi.mocked(exchangeAuthorizationCode).mockResolvedValue({ access_token: "at", token_type: "Bearer" });
+    vi.mocked(clearStoredFlowAsync).mockRejectedValueOnce(new Error("storage boom"));
+    const flow = createHeadlessAuthFlow(OPTIONS, sink);
+    await flow.start();
+
+    const snapshot = await flow.submitPassword("jane@example.com", "hunter2");
+
+    expect(snapshot.status).toBe("authenticated");
+    expect(snapshot.error).toBeNull();
+    expect(sink.completeSignIn).toHaveBeenCalledTimes(1);
+    expect(clearStoredFlowAsync).toHaveBeenCalledTimes(1); // the failing cleanup was still attempted
   });
 
   // --- Major/minor #7: concurrency guard -----------------------------------

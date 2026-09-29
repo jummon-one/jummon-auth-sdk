@@ -33,6 +33,8 @@ function makeRedirectClient(): JummonAuthClient {
     confirmOtpEnroll: vi.fn(),
     generateRecoveryCodes: vi.fn(),
     hasUnredeemedRecoveryCodes: vi.fn(),
+    listCredentials: vi.fn(),
+    removeCredential: vi.fn(),
   };
 }
 

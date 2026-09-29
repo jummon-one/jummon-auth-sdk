@@ -5,10 +5,11 @@ import {
   type HeadlessAuthFlow,
   type HeadlessFlowSnapshot,
   type HeadlessSessionSink,
+  type HeadlessStartOptions,
 } from "../core/headlessAuthFlowCore";
 import type { JummonAuthOptions } from "../types";
 
-export type { HeadlessAuthFlow, HeadlessFlowSnapshot, HeadlessSessionSink };
+export type { HeadlessAuthFlow, HeadlessFlowSnapshot, HeadlessSessionSink, HeadlessStartOptions };
 
 /**
  * WEB entrypoint for the headless multi-step login flow. `createJummonAuth({

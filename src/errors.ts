@@ -37,6 +37,46 @@ export type JummonAuthErrorCode =
   | "otp_enrollment_failed"
   /** Standalone `JummonAuthClient.generateRecoveryCodes()`/`hasUnredeemedRecoveryCodes()` (`../internal/recoveryCodesEnrollment.ts`, build #73) got a non-401 failure off `POST/GET /catalog/me/credentials/recovery-codes/{generate,status}` — same "collapse everything to one actionable message" posture as `otp_enrollment_failed`/`passkey_failed` (no federation-guard case here — a backup-code set isn't a local-login-identity field). */
   | "recovery_codes_failed"
+  /** Standalone `JummonAuthClient.listCredentials()` (`../internal/credentialsSelfService.ts`) got a non-401 failure off `GET /catalog/me/credentials` — the read equivalent of `passkey_failed`/`otp_enrollment_failed`'s "collapse everything unclassified" posture; there is nothing actionable to distinguish here beyond "try again". */
+  | "credentials_fetch_failed"
+  /**
+   * Standalone `JummonAuthClient.removeCredential()`
+   * (`../internal/credentialsSelfService.ts`) got catalog-api's
+   * `ME_CREDENTIAL_LAST_FACTOR` off `DELETE /catalog/me/credentials/{id}`
+   * (`catalog-api/internal/catalog/me/service/credentials.go`'s
+   * `strongFactorCount` guard — the account would be left with no working
+   * login factor) — distinct from `access_denied` (which means "not
+   * allowed", not "would lock you out"). Never retried automatically; the
+   * UI's only correct move is telling the user to enroll a replacement
+   * factor first.
+   */
+  | "last_factor_blocked"
+  /** Standalone `JummonAuthClient.removeCredential()` got catalog-api's `ME_CREDENTIAL_NOT_FOUND` — the target id is empty, malformed, or simply not present in the caller's OWN credential list. Deliberately the SAME code for all three (no IDOR oracle — `credentials.go`'s own doc), so this SDK does not attempt to distinguish "not yours" from "doesn't exist" either. */
+  | "credential_not_found"
+  /**
+   * Standalone `JummonAuthClient.removeCredential()` was rejected at the
+   * **gateway**, before catalog-api ever ran, because the caller's token
+   * doesn't meet the route's assurance requirement — RFC 9470 step-up
+   * (`jummon-api-gateway/internal/auth/orchestrator.go`'s `MeetsLoaRequirement`
+   * check, `DecisionDenyAssurance` = `"INSUFFICIENT_ASSURANCE_LEVEL"`, 401).
+   * `err.cause` is a `StepUpChallenge` (`../internal/credentialsSelfService.ts`)
+   * naming the `acrValues`/`maxAgeSeconds` a fresh authentication must
+   * satisfy. In `redirect` mode this SDK does NOT auto-retry: satisfying a
+   * step-up challenge requires a full-page OIDC redirect, which cannot be
+   * silently completed inside one `removeCredential()` call — re-authenticate
+   * (e.g. `signIn({ prompt: "login", extraQueryParams: { acr_values:
+   * err.cause.acrValues } })`), then call `removeCredential()` again. In
+   * `headless` mode (#5b) this error only surfaces when the internal
+   * step-up retry itself couldn't complete silently (a genuinely
+   * interactive re-auth is still needed) — see
+   * `credentialsSelfService.ts`'s `HeadlessStepUp` doc comment.
+   * Distinct from `passkey_failed` (an *enrollment* ceremony failure, not a
+   * re-auth challenge) and from `last_factor_blocked` (a different guard —
+   * this one, once satisfied, unblocks the SAME removal).
+   */
+  | "step_up_required"
+  /** Standalone `JummonAuthClient.removeCredential()` got a non-401/`ME_CREDENTIAL_NOT_FOUND`/`ME_CREDENTIAL_LAST_FACTOR` failure off `DELETE /catalog/me/credentials/{id}` — same "one actionable outcome, try again" collapse `otp_enrollment_failed`/`passkey_failed` already document for their own endpoints. */
+  | "credential_removal_failed"
   | "social_login_failed"
   | "cors_origin_rejected"
   /** Terminal `authenticated` envelope carried a `code`, but this JS realm lost `code_verifier` (e.g. a non-social reload mid-flow) — distinct from "no code at all" (`unknown`). Recovery: call `resume()`, or restart with `start()`. */

@@ -23,6 +23,7 @@ export {
   type HeadlessAuthFlow,
   type HeadlessFlowSnapshot,
   type HeadlessSessionSink,
+  type HeadlessStartOptions,
 } from "./headlessAuthFlowCore";
 export { HEADLESS_FLOW_STORAGE_PREFIX } from "./flowPersistence";
 // Credential-type-aware account recovery (issue #163/#165) — a SEPARATE

@@ -210,4 +210,18 @@ export interface HeadlessStartRequestBody {
   nonce?: string;
   /** Singular, space-delimited OIDC scope string (RFC 6749 wire shape) — never `scopes: string[]`. Default "openid" server-side if omitted. */
   scope?: string;
+  /**
+   * #5b — space-delimited OIDC `acr_values` (RFC-shaped, same string form as
+   * `scope` above), threaded straight through by `jummon-login-interface`'s
+   * `/api/v1/auth/:tenantId/:clientId/start` to auth-engine's `/oidc/auth`
+   * (shipped: `headlessAuthHandler.ts`'s `isValidAcrValues`, allowlisted
+   * against the closed `loa1`/`loa2`/`loa2p` ladder — a mismatched token is
+   * rejected 400 before it ever reaches auth-engine). Lets a headless caller
+   * request a step-up assurance level, e.g. `removeCredential()`'s gateway
+   * `required_acr=loa2` gate (`../internal/credentialsSelfService.ts`).
+   * Absent = byte-for-byte the same request as before this field existed.
+   */
+  acr_values?: string;
+  /** OIDC `max_age` (seconds) paired with `acr_values` above — same passthrough posture, absent = unchanged default. */
+  max_age?: number;
 }

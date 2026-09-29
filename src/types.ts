@@ -155,6 +155,63 @@ export interface RecoveryCodesGenerated {
   codes: string[];
 }
 
+/**
+ * One row of `JummonAuthClient.listCredentials()` (`GET /catalog/me/credentials`,
+ * #227) — aligned to catalog-api's ACTUAL shipped DTO
+ * (`catalog-api/internal/catalog/me/dto/dto.go`'s `CredentialResponse`,
+ * built off `internal/catalog/me/domain/domain.go`'s `Credential`/
+ * `CredentialKind`), not a speculative shape. Deliberately only 2 kinds
+ * exist on this list — `"passkey"` and `"otp"` — see `type`'s doc.
+ */
+export interface CredentialSummary {
+  /**
+   * Opaque, kind-specific — pass verbatim to `removeCredential(id)`.
+   * **Present only for a `passkey` entry** (the passwordless/device row's
+   * numeric id, as a string); **absent for the `otp` entry** — OTP has
+   * exactly one credential per user with no removable id of its own
+   * (`domain.Credential.ID`'s doc: "ID is empty for the OTP entry" —
+   * `RemoveCredential` rejects an empty/non-numeric id with
+   * `ME_CREDENTIAL_NOT_FOUND` before it ever reaches usermanager, so an
+   * `otp` row is inherently not `removeCredential()`-able through this
+   * endpoint — use `JummonAuthClient.confirmOtpEnroll()`'s counterpart, the
+   * dedicated `POST /catalog/me/credentials/otp/reset`, to remove/replace
+   * it instead).
+   */
+  id?: string;
+  /**
+   * Credential kind. Deliberately narrow — `catalog-api`'s
+   * `domain.CredentialKind` doc: the wire surface unifies READS across
+   * passkeys and the OTP authenticator, but password has its own
+   * `setPassword()` and recovery codes their own generate/status pair;
+   * neither is a "device" a caller browses/removes one-by-one, so neither
+   * ever appears in this list. Widened to `| string` so a future kind
+   * degrades to "render generically" instead of a type error, same posture
+   * as `HeadlessLoginMethodRef` (`./flow/types.ts`).
+   */
+  type: "passkey" | "otp" | string;
+  /** Display name — a passkey's caller-supplied label, or `"Authenticator app"` for the `otp` entry (`ListCredentials`'s hardcoded label, `catalog-api/internal/catalog/me/service/credentials.go`). */
+  name?: string;
+  /** Whether this credential is currently active/usable. */
+  active: boolean;
+  /** ISO-8601 — when this credential was registered/set. Omitted when the server has no timestamp for it (e.g. a pre-#227 OTP enrollment jummon-user-management never timestamped, per `CredentialResponse`'s doc). */
+  createdAt?: string;
+}
+
+/**
+ * `JummonAuthClient.listCredentials()`'s return shape — wraps
+ * `CredentialSummary[]` alongside `partialFailures`, catalog-api's own
+ * "don't fail the whole read on one signal's upstream error" posture
+ * (`ListCredentialsResponse.PartialFailures`, `dto.go`): a value like
+ * `["passkeys"]` means the OTP read succeeded and IS reflected in
+ * `credentials`, but the passkey read failed server-side and is NOT — the
+ * list may be incomplete even though the call itself succeeded. Empty when
+ * every underlying read succeeded (the common case).
+ */
+export interface CredentialListResult {
+  credentials: CredentialSummary[];
+  partialFailures: string[];
+}
+
 /** A signed-in Jummon user, derived from the validated id_token + access_token claims. */
 export interface JummonUser {
   /** Stable subject identifier (the user's UUID within the tenant). */

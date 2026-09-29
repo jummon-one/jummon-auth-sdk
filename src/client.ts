@@ -1,7 +1,12 @@
 import { HeadlessEngine } from "./engines/headlessEngine";
 import { RedirectEngine } from "./engines/redirectEngine";
 import { JummonAuthError } from "./errors";
-import { createHeadlessAuthFlow, type HeadlessAuthFlow } from "./flow/headlessAuthFlow";
+import {
+  createHeadlessAuthFlow,
+  type HeadlessAuthFlow,
+  type HeadlessSessionSink,
+} from "./flow/headlessAuthFlow";
+import { listCredentials, removeCredential, type HeadlessStepUp } from "./internal/credentialsSelfService";
 import { beginOtpEnrollment, confirmOtpEnrollment } from "./internal/otpEnrollment";
 import { DEFAULT_API_HOST, enrollPasskey } from "./internal/passkeyEnrollment";
 import { setPasswordSelfService } from "./internal/passwordSelfService";
@@ -9,6 +14,7 @@ import { generateRecoveryCodesSelf, getRecoveryCodesSelfStatus } from "./interna
 import type {
   AuthEngine,
   AuthState,
+  CredentialListResult,
   JummonAuthOptions,
   JummonUser,
   OtpEnrollmentChallenge,
@@ -129,6 +135,62 @@ export interface JummonAuthClient {
    * `generateRecoveryCodes()`).
    */
   hasUnredeemedRecoveryCodes(): Promise<boolean>;
+  /**
+   * Standalone, post-login list of every credential the signed-in user has
+   * enrolled — passkeys + the OTP authenticator (#227,
+   * `GET /catalog/me/credentials`; see `CredentialSummary`'s doc for why
+   * only those 2 kinds — password/recovery-codes have their own dedicated
+   * self-service verbs and never appear here). The "Manage sign-in methods"
+   * screen's data source. Works in BOTH `redirect` and `headless` mode.
+   * Only ever reflects the CALLER's own credentials — there is no
+   * admin/other-user variant on this method; that stays on `catalog-api`'s
+   * `/catalog/users/{id}/credentials/*` admin surface.
+   *
+   * Requires a signed-in user: throws `not_authenticated` if
+   * `getAccessToken()` resolves to `null`. Throws `credentials_fetch_failed`
+   * for anything else — see `../internal/credentialsSelfService.ts`.
+   *
+   * Uses `JummonAuthOptions.apiHost` (the API gateway host), NEVER
+   * `issuerHost` — see that option's doc comment.
+   */
+  listCredentials(): Promise<CredentialListResult>;
+  /**
+   * Standalone, post-login removal of one enrolled PASSKEY (#228,
+   * `DELETE /catalog/me/credentials/{id}`) — the counterpart to
+   * `registerPasskey()` for taking a credential OUT of the account,
+   * id-addressed via `CredentialSummary.id` (`listCredentials()`). Only a
+   * `"passkey"`-kind `CredentialSummary` has an `id` at all — the `"otp"`
+   * entry has none (see that type's doc); remove/replace OTP via
+   * `POST /catalog/me/credentials/otp/reset` instead. Works in BOTH
+   * `redirect` and `headless` mode.
+   *
+   * The server enforces two independent guards, surfaced as distinct typed
+   * errors:
+   *  - `last_factor_blocked` — removal would leave the account with no
+   *    working sign-in method (`ME_CREDENTIAL_LAST_FACTOR`). Never retried;
+   *    the UI's only correct move is prompting the user to enroll a
+   *    replacement first.
+   *  - `step_up_required` — enforced at the GATEWAY, not catalog-api (this
+   *    route requires a fresh `acr=loa2` token, RFC 9470). `redirect` mode
+   *    does NOT auto-retry — see `../internal/credentialsSelfService.ts`'s
+   *    doc comment for the re-authenticate-then-retry recipe. `headless`
+   *    mode (#5b) attempts an internal, best-effort headless re-auth +
+   *    retry first — this error only reaches the caller when that attempt
+   *    itself couldn't complete silently (see `HeadlessStepUp`'s doc
+   *    comment, same file).
+   *  - `credential_not_found` — the id is empty/malformed, or simply not
+   *    one of the caller's own (`ME_CREDENTIAL_NOT_FOUND`, deliberately the
+   *    SAME code for both — no IDOR oracle).
+   *
+   * Requires a signed-in user: throws `not_authenticated` if
+   * `getAccessToken()` resolves to `null`. Throws `credential_removal_failed`
+   * for anything else unclassified — see
+   * `../internal/credentialsSelfService.ts`.
+   *
+   * Uses `JummonAuthOptions.apiHost` (the API gateway host), NEVER
+   * `issuerHost` — see that option's doc comment.
+   */
+  removeCredential(credentialId: string): Promise<void>;
 }
 
 /**
@@ -180,6 +242,8 @@ function buildClient(engine: AuthEngine, options: JummonAuthOptions): JummonAuth
     confirmOtpEnroll: (otp) => confirmOtpEnrollViaEngine(engine, options, otp),
     generateRecoveryCodes: () => generateRecoveryCodesViaEngine(engine, options),
     hasUnredeemedRecoveryCodes: () => hasUnredeemedRecoveryCodesViaEngine(engine, options),
+    listCredentials: () => listCredentialsViaEngine(engine, options),
+    removeCredential: (credentialId) => removeCredentialViaEngine(engine, options, credentialId),
   };
 }
 
@@ -277,6 +341,65 @@ async function hasUnredeemedRecoveryCodesViaEngine(
     );
   }
   return getRecoveryCodesSelfStatus(accessToken, { apiHost: options.apiHost ?? DEFAULT_API_HOST });
+}
+
+async function listCredentialsViaEngine(
+  engine: AuthEngine,
+  options: JummonAuthOptions,
+): Promise<CredentialListResult> {
+  const accessToken = await engine.getAccessToken();
+  if (!accessToken) {
+    throw new JummonAuthError(
+      "not_authenticated",
+      "listCredentials() requires a signed-in user — call it after getUser()/isAuthenticated() " +
+        "confirms an active session.",
+    );
+  }
+  return listCredentials(accessToken, { apiHost: options.apiHost ?? DEFAULT_API_HOST });
+}
+
+async function removeCredentialViaEngine(
+  engine: AuthEngine,
+  options: JummonAuthOptions,
+  credentialId: string,
+): Promise<void> {
+  const accessToken = await engine.getAccessToken();
+  if (!accessToken) {
+    throw new JummonAuthError(
+      "not_authenticated",
+      "removeCredential() requires a signed-in user — call it after getUser()/isAuthenticated() " +
+        "confirms an active session.",
+    );
+  }
+  return removeCredential(accessToken, credentialId, {
+    apiHost: options.apiHost ?? DEFAULT_API_HOST,
+    headlessStepUp: buildHeadlessStepUp(engine, options),
+  });
+}
+
+/**
+ * #5b — `undefined` in `redirect` mode (or for any future `AuthEngine` that
+ * doesn't implement `HeadlessSessionSink`): `removeCredential()` then falls
+ * back to its pre-#5b behavior exactly (throw `step_up_required`, caller
+ * re-authenticates via `signIn({ extraQueryParams: { acr_values } })`).
+ * Constructs a FRESH `HeadlessAuthFlow` (`createHeadlessAuthFlow`) per call
+ * rather than reusing `startAuthFlow()`'s flow — this is an internal,
+ * caller-invisible re-auth attempt, not something the app's own in-progress
+ * login flow (if any) should observe or have its state mutated by.
+ */
+function buildHeadlessStepUp(engine: AuthEngine, options: JummonAuthOptions): HeadlessStepUp | undefined {
+  if (options.mode !== "headless" || !isHeadlessSessionSink(engine)) {
+    return undefined;
+  }
+  const flow = createHeadlessAuthFlow(options, engine);
+  return {
+    start: (opts) => flow.start(opts),
+    getAccessToken: () => engine.getAccessToken(),
+  };
+}
+
+function isHeadlessSessionSink(engine: AuthEngine): engine is AuthEngine & HeadlessSessionSink {
+  return typeof (engine as Partial<HeadlessSessionSink>).completeSignIn === "function";
 }
 
 function validateOptions(options: JummonAuthOptions): void {

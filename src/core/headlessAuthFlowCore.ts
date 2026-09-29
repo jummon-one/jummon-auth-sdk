@@ -21,6 +21,31 @@ import { buildDeviceConsentSubmit, buildTermsAgreementSubmit } from "../flow/ste
 const DEFAULT_SCOPES = ["openid", "profile", "email", "offline_access"];
 
 /**
+ * #5b — mirrors `jummon-login-interface`'s `ALLOWED_ACR_VALUES`
+ * (`src/utils/constants/acrValues.ts`) exactly, itself mirroring
+ * `jummon-auth-engine`'s `loa.go` LOA-ladder constants. Validated
+ * CLIENT-side here for the same reason login-interface validates it
+ * server-side (fail-fast on a typo with a clear error) — this is
+ * defense-in-depth, not a substitute for that check; login-interface still
+ * rejects any request that somehow bypasses this one.
+ */
+const ALLOWED_ACR_VALUES = new Set(["loa1", "loa2", "loa2p"]);
+
+/** Same tokenization/validation shape as login-interface's `isValidAcrValues` — every space-delimited token must be in the closed ladder. */
+function isValidAcrValues(value: string): boolean {
+  const tokens = value.trim().split(/\s+/).filter(Boolean);
+  return tokens.length > 0 && tokens.every((token) => ALLOWED_ACR_VALUES.has(token));
+}
+
+/** `HeadlessAuthFlow.start()`'s optional #5b step-up request — see that method's doc comment. */
+export interface HeadlessStartOptions {
+  /** Space-delimited, allowlisted against `loa1`/`loa2`/`loa2p` — anything else resolves to an `invalid_options` error snapshot (same posture as every other validation failure in this class), before any network call. */
+  acrValues?: string;
+  /** Seconds — paired with `acrValues`, forwarded verbatim. */
+  maxAge?: number;
+}
+
+/**
  * `current_step.ref`s the backend intercalates purely for internal
  * bookkeeping (session reconciliation, IP allow/blocklist) — no UI exists
  * for them anywhere, hosted SSR or otherwise. Mirrors `loginHandler.ts`'s
@@ -102,7 +127,17 @@ const IDLE_SNAPSHOT: HeadlessFlowSnapshot = {
  */
 export interface HeadlessAuthFlow {
   readonly state: HeadlessFlowSnapshot;
-  start(): Promise<HeadlessFlowSnapshot>;
+  /**
+   * #5b — `opts.acrValues`/`opts.maxAge` request a step-up assurance level
+   * on the resulting `AuthRequest` (OIDC Core §3.1.2.1's `acr_values`/
+   * `max_age`, forwarded to `jummon-login-interface`'s `/api/v1/auth/*`
+   * `start` — see `../flow/types.ts`'s `HeadlessStartRequestBody`). Absent
+   * (the default, every pre-#5b call site) is byte-for-byte the same
+   * request as before this option existed. The primary consumer is
+   * `removeCredential()`'s (`../internal/credentialsSelfService.ts`)
+   * gateway `required_acr=loa2` step-up — a plain login doesn't need this.
+   */
+  start(opts?: HeadlessStartOptions): Promise<HeadlessFlowSnapshot>;
   submitPassword(username: string, password: string): Promise<HeadlessFlowSnapshot>;
   /**
    * Answers the `create-password-form` required-action step (`needs_password`
@@ -250,6 +285,36 @@ export class HeadlessAuthFlowCore implements HeadlessAuthFlow {
   private inFlight: Promise<HeadlessFlowSnapshot> | null = null;
   /** Guards `applyErrorOrRestart` against restarting a restart (see its doc comment). */
   private restartingAfterExpiry = false;
+  /**
+   * Double-exchange hardening — closes the "token was obtained but the app
+   * shows a login error" bug class. Holds the authorization `code` from the
+   * LAST successful `completeAuthenticated()` exchange, paired with the
+   * snapshot it produced. A later `completeAuthenticated()` call carrying
+   * this EXACT `code` again — a second `resume()` on foreground/remount, a
+   * re-poll() that happens to return the same terminal `authenticated`
+   * envelope, or (paired with the RN navigation adapter's `clearAuthParams()`
+   * fix) a stale deep link still sitting in `getCurrentUrl()` — re-emits
+   * `lastAuthenticatedSnapshot` instead of re-exchanging a single-use code,
+   * which would always fail `invalid_grant` at the token endpoint and
+   * incorrectly surface as a login error even though the FIRST exchange
+   * already established the session. Never explicitly reset: a fresh
+   * `start()`/sign-out cycle always gets a brand-new `code` from the
+   * backend, so the equality check simply stops matching on its own — this
+   * is about not RE-attempting a consumed code, never about weakening
+   * single-use-code enforcement (a genuinely different code still exchanges
+   * normally, and a genuinely first-time `invalid_grant` still surfaces).
+   */
+  private consumedAuthCode: string | null = null;
+  private lastAuthenticatedSnapshot: HeadlessFlowSnapshot | null = null;
+  /**
+   * #5b — the `HeadlessStartOptions` the LAST `start()` call used, so
+   * `applyErrorOrRestart`'s transparent `flow_expired` restart (same
+   * tenant/client/redirectUri/scope, fresh PKCE pair) also preserves
+   * whatever step-up level was originally requested, instead of silently
+   * downgrading a `removeCredential()` step-up retry back to a plain login
+   * on restart.
+   */
+  private lastStartOptions: HeadlessStartOptions | undefined;
 
   constructor(
     options: JummonAuthOptions,
@@ -288,8 +353,8 @@ export class HeadlessAuthFlowCore implements HeadlessAuthFlow {
     this.listeners.clear();
   }
 
-  start(): Promise<HeadlessFlowSnapshot> {
-    return this.runExclusive(() => this.doStart());
+  start(opts?: HeadlessStartOptions): Promise<HeadlessFlowSnapshot> {
+    return this.runExclusive(() => this.doStart(opts));
   }
 
   submitPassword(username: string, password: string): Promise<HeadlessFlowSnapshot> {
@@ -436,13 +501,25 @@ export class HeadlessAuthFlowCore implements HeadlessAuthFlow {
     return promise;
   }
 
-  private async doStart(): Promise<HeadlessFlowSnapshot> {
+  private async doStart(opts?: HeadlessStartOptions): Promise<HeadlessFlowSnapshot> {
+    if (opts?.acrValues !== undefined && !isValidAcrValues(opts.acrValues)) {
+      return this.applyError(
+        new JummonAuthError(
+          "invalid_options",
+          `start(): acrValues must be one or more of "loa1"/"loa2"/"loa2p" (space-delimited), got "${opts.acrValues}".`,
+        ),
+      );
+    }
+
     this.emit({ ...IDLE_SNAPSHOT, status: "loading" });
     // Baseline for `client_signal.flow_ms` (#85) — set unconditionally
     // (even when `collectRiskSignals` is off) since it's a cheap
     // `Date.now()` call; `buildRiskSignals()` is what actually gates on the
     // option before ever reading it.
     this.flowStartedAt = Date.now();
+    // #5b — remembered for `applyErrorOrRestart`'s flow_expired restart (see
+    // `lastStartOptions`'s own doc comment).
+    this.lastStartOptions = opts;
 
     try {
       const { codeVerifier, codeChallenge } = await generatePkcePair(this.adapters.crypto);
@@ -462,6 +539,11 @@ export class HeadlessAuthFlowCore implements HeadlessAuthFlow {
         // `authorize.ts`'s `input.scope || 'openid'` never read the old
         // array field at all.
         scope: this.scopes.join(" "),
+        // #5b — both undefined when `opts` is omitted, so the outbound JSON
+        // body is byte-for-byte the same as before this option existed
+        // (`JSON.stringify` drops `undefined` keys).
+        acr_values: opts?.acrValues,
+        max_age: opts?.maxAge,
       });
       // Persisted defensively on every successful start() (covers a tab
       // reload/close-reopen mid-flow, not just the social-redirect path).
@@ -737,6 +819,16 @@ export class HeadlessAuthFlowCore implements HeadlessAuthFlow {
   }
 
   private async completeAuthenticated(envelope: HeadlessAuthEnvelope): Promise<HeadlessFlowSnapshot> {
+    // Bug 1 — double-code-exchange guard (see `consumedAuthCode`'s doc
+    // comment). Checked FIRST, before the `!envelope.code`/`!this.codeVerifier`
+    // guards below: a repeat delivery of an already-consumed code is a valid,
+    // already-completed sign-in regardless of whether this JS realm still
+    // holds the (now-irrelevant) PKCE verifier for it.
+    if (envelope.code && envelope.code === this.consumedAuthCode && this.lastAuthenticatedSnapshot) {
+      this.emit(this.lastAuthenticatedSnapshot);
+      return this.lastAuthenticatedSnapshot;
+    }
+
     if (!envelope.code) {
       return this.applyError(
         new JummonAuthError("unknown", "Auth API returned `authenticated` with no authorization code."),
@@ -766,7 +858,20 @@ export class HeadlessAuthFlowCore implements HeadlessAuthFlow {
         codeVerifier: this.codeVerifier,
       });
       const user = this.sink.completeSignIn(tokens);
-      await clearStoredFlowAsync(this.adapters.storage, this.tenant, this.clientId);
+      // Bug 3 — post-sign-in cleanup must be best-effort: the session is
+      // ALREADY live (`sink.completeSignIn()` above already emitted
+      // `authenticated` to `onAuthStateChanged` subscribers via the sink),
+      // so a storage-cleanup failure here must never fall through to the
+      // `catch` below and downgrade an already-successful sign-in to a
+      // login error. `clearStoredFlowAsync()` itself never throws (its own
+      // doc comment) — this inline try/catch is defense-in-depth against
+      // that guarantee changing later, not a workaround for a bug in it
+      // today.
+      try {
+        await clearStoredFlowAsync(this.adapters.storage, this.tenant, this.clientId);
+      } catch {
+        // best-effort — see comment above.
+      }
       const next: HeadlessFlowSnapshot = {
         status: "authenticated",
         flowToken: envelope.flow_token,
@@ -781,6 +886,10 @@ export class HeadlessAuthFlowCore implements HeadlessAuthFlow {
         error: null,
         user,
       };
+      // Recorded before emit() so the guard at the top of this method is
+      // live for the very next call, however soon it arrives (Bug 1).
+      this.consumedAuthCode = envelope.code;
+      this.lastAuthenticatedSnapshot = next;
       this.emit(next);
       return next;
     } catch (err) {
@@ -810,7 +919,7 @@ export class HeadlessAuthFlowCore implements HeadlessAuthFlow {
     if (authError.code === "flow_expired" && this.autoRestartOnExpiry && !this.restartingAfterExpiry) {
       this.restartingAfterExpiry = true;
       try {
-        const restarted = await this.doStart();
+        const restarted = await this.doStart(this.lastStartOptions);
         if (restarted.status === "error") {
           return restarted;
         }

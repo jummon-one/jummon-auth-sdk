@@ -11,11 +11,16 @@ vi.mock("./internal/otpEnrollment", () => ({
   beginOtpEnrollment: vi.fn(),
   confirmOtpEnrollment: vi.fn(),
 }));
+vi.mock("./internal/credentialsSelfService", () => ({
+  listCredentials: vi.fn(),
+  removeCredential: vi.fn(),
+}));
 
 import { createJummonAuth } from "./client";
 import { enrollPasskey } from "./internal/passkeyEnrollment";
 import { setPasswordSelfService } from "./internal/passwordSelfService";
 import { beginOtpEnrollment, confirmOtpEnrollment } from "./internal/otpEnrollment";
+import { listCredentials, removeCredential } from "./internal/credentialsSelfService";
 import { HeadlessEngine } from "./engines/headlessEngine";
 import { RedirectEngine } from "./engines/redirectEngine";
 
@@ -155,5 +160,134 @@ describe("JummonAuthClient.beginOtpEnroll() / confirmOtpEnroll()", () => {
     await auth.beginOtpEnroll();
 
     expect(beginOtpEnrollment).toHaveBeenCalledWith("token-abc", { apiHost: "api.jummon.com" });
+  });
+});
+
+describe("JummonAuthClient.listCredentials()", () => {
+  beforeEach(() => {
+    vi.mocked(listCredentials).mockReset();
+  });
+
+  it("throws not_authenticated instead of calling the network when there is no session", async () => {
+    vi.spyOn(RedirectEngine.prototype, "getAccessToken").mockResolvedValue(null);
+
+    const auth = createJummonAuth(OPTIONS);
+
+    await expect(auth.listCredentials()).rejects.toMatchObject({ code: "not_authenticated" });
+    expect(listCredentials).not.toHaveBeenCalled();
+  });
+
+  it("resolves the current access_token and delegates to listCredentials with apiHost (headless mode)", async () => {
+    vi.spyOn(HeadlessEngine.prototype, "getAccessToken").mockResolvedValue("token-abc");
+    const result = {
+      credentials: [{ id: "cred-1", type: "passkey" as const, name: "My phone", active: true }],
+      partialFailures: [],
+    };
+    vi.mocked(listCredentials).mockResolvedValue(result);
+
+    const auth = createJummonAuth({ ...OPTIONS, mode: "headless", apiHost: "api.jummon.dev" });
+    const got = await auth.listCredentials();
+
+    expect(got).toEqual(result);
+    expect(listCredentials).toHaveBeenCalledWith("token-abc", { apiHost: "api.jummon.dev" });
+  });
+
+  it("defaults apiHost to api.jummon.com when not configured", async () => {
+    vi.spyOn(RedirectEngine.prototype, "getAccessToken").mockResolvedValue("token-abc");
+    vi.mocked(listCredentials).mockResolvedValue({ credentials: [], partialFailures: [] });
+
+    const auth = createJummonAuth(OPTIONS);
+    await auth.listCredentials();
+
+    expect(listCredentials).toHaveBeenCalledWith("token-abc", { apiHost: "api.jummon.com" });
+  });
+});
+
+describe("JummonAuthClient.removeCredential()", () => {
+  beforeEach(() => {
+    vi.mocked(removeCredential).mockReset();
+  });
+
+  it("throws not_authenticated instead of calling the network when there is no session", async () => {
+    vi.spyOn(RedirectEngine.prototype, "getAccessToken").mockResolvedValue(null);
+
+    const auth = createJummonAuth(OPTIONS);
+
+    await expect(auth.removeCredential("cred-1")).rejects.toMatchObject({ code: "not_authenticated" });
+    expect(removeCredential).not.toHaveBeenCalled();
+  });
+
+  it("resolves the current access_token and delegates to removeCredential with the id + apiHost (headless mode)", async () => {
+    vi.spyOn(HeadlessEngine.prototype, "getAccessToken").mockResolvedValue("token-abc");
+    vi.mocked(removeCredential).mockResolvedValue(undefined);
+
+    const auth = createJummonAuth({ ...OPTIONS, mode: "headless", apiHost: "api.jummon.dev" });
+    await auth.removeCredential("cred-1");
+
+    expect(removeCredential).toHaveBeenCalledWith(
+      "token-abc",
+      "cred-1",
+      expect.objectContaining({ apiHost: "api.jummon.dev" }),
+    );
+  });
+
+  // --- #5b: headlessStepUp wiring (removeCredentialViaEngine -> buildHeadlessStepUp) --
+
+  it("headless mode wires a headlessStepUp adapter (start + getAccessToken) into removeCredential()", async () => {
+    vi.spyOn(HeadlessEngine.prototype, "getAccessToken").mockResolvedValue("token-abc");
+    vi.mocked(removeCredential).mockResolvedValue(undefined);
+
+    const auth = createJummonAuth({ ...OPTIONS, mode: "headless", apiHost: "api.jummon.dev" });
+    await auth.removeCredential("cred-1");
+
+    const [, , opts] = vi.mocked(removeCredential).mock.calls[0] as [
+      string,
+      string,
+      { headlessStepUp?: { start: unknown; getAccessToken: () => Promise<string | null> } },
+    ];
+    expect(typeof opts.headlessStepUp?.start).toBe("function");
+    expect(typeof opts.headlessStepUp?.getAccessToken).toBe("function");
+
+    // getAccessToken() on the adapter delegates straight back to the same
+    // engine.getAccessToken() the outer call already resolved through —
+    // NOT a second, independent token source.
+    await expect(opts.headlessStepUp?.getAccessToken()).resolves.toBe("token-abc");
+  });
+
+  it("redirect mode never wires a headlessStepUp adapter — RedirectEngine has no headless re-auth to drive", async () => {
+    vi.spyOn(RedirectEngine.prototype, "getAccessToken").mockResolvedValue("token-abc");
+    vi.mocked(removeCredential).mockResolvedValue(undefined);
+
+    const auth = createJummonAuth(OPTIONS);
+    await auth.removeCredential("cred-1");
+
+    const [, , opts] = vi.mocked(removeCredential).mock.calls[0] as [string, string, { headlessStepUp?: unknown }];
+    expect(opts.headlessStepUp).toBeUndefined();
+  });
+
+  it("propagates a typed last_factor_blocked rejection from the underlying module unchanged", async () => {
+    vi.spyOn(HeadlessEngine.prototype, "getAccessToken").mockResolvedValue("token-abc");
+    const { JummonAuthError } = await import("./errors");
+    vi.mocked(removeCredential).mockRejectedValue(
+      new JummonAuthError("last_factor_blocked", "only remaining factor"),
+    );
+
+    const auth = createJummonAuth({ ...OPTIONS, mode: "headless" });
+
+    await expect(auth.removeCredential("cred-1")).rejects.toMatchObject({ code: "last_factor_blocked" });
+  });
+
+  it("defaults apiHost to api.jummon.com when not configured", async () => {
+    vi.spyOn(RedirectEngine.prototype, "getAccessToken").mockResolvedValue("token-abc");
+    vi.mocked(removeCredential).mockResolvedValue(undefined);
+
+    const auth = createJummonAuth(OPTIONS);
+    await auth.removeCredential("cred-1");
+
+    expect(removeCredential).toHaveBeenCalledWith(
+      "token-abc",
+      "cred-1",
+      expect.objectContaining({ apiHost: "api.jummon.com" }),
+    );
   });
 });

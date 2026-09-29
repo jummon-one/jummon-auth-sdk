@@ -71,15 +71,28 @@ export interface PlatformCrypto {
  * is no addressable URL bar — `redirect()` opens the system browser (e.g.
  * `Linking.openURL` + `expo-web-browser`) and `getCurrentUrl()` returns the
  * deep-link URL that reopened the app (supplied by the RN adapter's own
- * `Linking` listener, not read from a browser API); `clearAuthParams()` is a
- * no-op there — nothing to strip from history.
+ * `Linking` listener, not read from a browser API). `clearAuthParams()` has
+ * nothing to strip from history there, but it is NOT a no-op: the RN
+ * adapter (`@jummon/auth-react-native`'s `packages/react-native/src/
+ * adapters/navigation.ts`) uses it to forget the one-shot `code`/`state` it
+ * tracked in `lastUrl`, so a later `resume()` can't read the same
+ * already-consumed authorization code off `getCurrentUrl()` again and drive
+ * a doomed second exchange of it — part of the double-code-exchange
+ * hardening in `../headlessAuthFlowCore.ts` (`consumedAuthCode`).
  */
 export interface PlatformNavigation {
   /** Navigates away from the app to `url` — full-page redirect on web, system-browser/`Linking.openURL` on RN. Never an in-app iframe/WebView (Google and other IdPs block embedded-WebView OAuth outright — same rule `startSocialLogin`'s doc comment states). */
   redirect(url: string): void | Promise<void>;
   /** The current page/deep-link URL, or `null` if none is available. */
   getCurrentUrl(): string | null;
-  /** Strips one-shot auth query params (`code`/`state`/`auth_resume`) from the current URL/history without triggering a navigation. No-op on a platform with no addressable URL bar. */
+  /**
+   * Strips one-shot auth query params (`code`/`state`/`auth_resume`) from
+   * the current URL/history without triggering a navigation, on a platform
+   * with an addressable URL bar. On a platform without one (RN), this MUST
+   * still make those one-shot values unavailable to a later
+   * `getCurrentUrl()` call — see this interface's own doc comment — never a
+   * literal no-op, since the params otherwise never actually go away.
+   */
   clearAuthParams(): void;
 }
 

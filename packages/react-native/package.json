@@ -1,6 +1,6 @@
 {
   "name": "@jummon/auth-react-native",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "React Native / Expo adapters for @jummon/auth's agnostic core: AsyncStorage+SecureStore storage, expo-crypto PKCE, Linking-based social-login navigation, and react-native-passkey WebAuthn. Headless-only (mode: \"headless\") — no hosted-redirect mode on RN.",
   "license": "MIT",
   "author": "Jummon",
