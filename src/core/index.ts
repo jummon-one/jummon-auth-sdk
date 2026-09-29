@@ -26,6 +26,22 @@ export {
   type HeadlessStartOptions,
 } from "./headlessAuthFlowCore";
 export { HEADLESS_FLOW_STORAGE_PREFIX } from "./flowPersistence";
+// Credential-type-aware account recovery (issue #163/#165) — a SEPARATE
+// step-machine from HeadlessAuthFlowCore above (drives iam-dynamic-flows'
+// execution-flow API, not auth-engine's headless Auth API). See
+// headlessRecoveryFlowCore.ts's own doc comment for what's built vs.
+// deferred to Wave 4.
+export {
+  HeadlessRecoveryFlowCore,
+  type HeadlessRecoveryFlowOptions,
+  type HeadlessRecoveryFlowSnapshot,
+  type HeadlessRecoveryFlowStatus,
+} from "./headlessRecoveryFlowCore";
+export {
+  runRecoveryPasskeyCeremony,
+  type RecoveryPasskeyChallenge,
+  type RecoveryPasskeyAttestationSubmission,
+} from "../internal/recoveryPasskeyEnrollment";
 export { DEVICE_ID_STORAGE_PREFIX, getOrCreateDeviceId, rotateDeviceId } from "./deviceId";
 // THE canonical base64/base64url codec (B1 fix — see `../internal/base64.ts`'s
 // doc comment) — re-exported so a platform package (`@jummon/auth-react-native`)
@@ -110,6 +126,19 @@ export {
   confirmOtpEnrollment,
   type OtpEnrollmentOptions,
 } from "../internal/otpEnrollment";
+// Standalone, post-login recovery-codes self-service (build #73) — pure
+// fetch-based, platform-agnostic already (same posture as
+// setPasswordSelfService/beginOtpEnrollment above), just never re-exported
+// from this subpath until now (mobile parity gap item #5). Was previously
+// browser-main-only via `../client.ts`'s `generateRecoveryCodes()`/
+// `hasUnredeemedRecoveryCodes()` — `@jummon/auth-react-native`'s client
+// wires these same two functions the same way.
+export {
+  generateRecoveryCodesSelf,
+  getRecoveryCodesSelfStatus,
+  type RecoveryCodesEnrollmentOptions,
+} from "../internal/recoveryCodesEnrollment";
+export type { RecoveryCodesGenerated } from "../types";
 
 // Re-exported so a platform package can build the same `JummonUser`/
 // `AuthEngine` shapes and talk to the same wire without re-deriving them —

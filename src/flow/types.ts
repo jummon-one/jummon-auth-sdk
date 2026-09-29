@@ -165,6 +165,14 @@ export interface HeadlessAuthEnvelope {
   /** Top-level convenience copy of `data.passwordless_available`. */
   passwordless_available?: boolean;
   /**
+   * Issue #160 — top-level convenience copy of `data.magic_link_available`,
+   * additive to the wire contract the same way `passwordless_available`
+   * itself was: absent on a gate-off tenant (every tenant until Flow
+   * Studio authors `validate_magic_link`), so a caller predating #160
+   * observes byte-for-byte unchanged behavior.
+   */
+  magic_link_available?: boolean;
+  /**
    * Carries `login_layout` (see `HeadlessLoginLayout`'s doc comment) among
    * whatever else the current step's `AuthExtensionGetResponse` projects —
    * no dedicated top-level convenience field for it exists on this

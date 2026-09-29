@@ -35,6 +35,8 @@ export type JummonAuthErrorCode =
   | "invalid_password"
   /** Standalone `JummonAuthClient.confirmOtpEnroll()` (`../internal/otpEnrollment.ts`) got a non-401/403 failure off `POST /catalog/me/credentials/otp/enroll/finish` — most commonly the submitted code didn't match the secret `beginOtpEnroll()` minted server-side, or `beginOtpEnroll()` was never called (or its window lapsed) so there is no pending enrollment to confirm (catalog-api collapses the upstream `jummon-user-management` confirm failure into a generic wrap; the right UX is always "check the code and try again", same posture as `passkey_failed`). */
   | "otp_enrollment_failed"
+  /** Standalone `JummonAuthClient.generateRecoveryCodes()`/`hasUnredeemedRecoveryCodes()` (`../internal/recoveryCodesEnrollment.ts`, build #73) got a non-401 failure off `POST/GET /catalog/me/credentials/recovery-codes/{generate,status}` — same "collapse everything to one actionable message" posture as `otp_enrollment_failed`/`passkey_failed` (no federation-guard case here — a backup-code set isn't a local-login-identity field). */
+  | "recovery_codes_failed"
   /** Standalone `JummonAuthClient.listCredentials()` (`../internal/credentialsSelfService.ts`) got a non-401 failure off `GET /catalog/me/credentials` — the read equivalent of `passkey_failed`/`otp_enrollment_failed`'s "collapse everything unclassified" posture; there is nothing actionable to distinguish here beyond "try again". */
   | "credentials_fetch_failed"
   /**
@@ -79,6 +81,8 @@ export type JummonAuthErrorCode =
   | "cors_origin_rejected"
   /** Terminal `authenticated` envelope carried a `code`, but this JS realm lost `code_verifier` (e.g. a non-social reload mid-flow) — distinct from "no code at all" (`unknown`). Recovery: call `resume()`, or restart with `start()`. */
   | "pkce_verifier_lost"
+  /** `@jummon/auth-react-native`'s `createRecoveryReturnListener` (`packages/react-native/src/adapters/navigation.ts`, threat model §3.5 R12) rejected a URL that claimed to resume/foreground the app for an account-recovery return leg but wasn't an OS-verified App Link (Android) / Universal Link (iOS) — a bare custom-scheme URL (`myapp://...`) for THIS specific leg, unlike the general OIDC/social-login redirect, which is allowed to use one (RFC 8252 + PKCE already defends that leg). Never silently ignored — always surfaced via `onRejectedLink`/this error so the integrator can alert/log it (a real rejection is a live scheme-hijack signal, T16). */
+  | "recovery_link_not_os_verified"
   | "unknown";
 
 /**
