@@ -114,6 +114,26 @@ export interface JummonAuthOptions {
    * for the full list of what's collected and why nothing else is).
    */
   collectRiskSignals?: boolean;
+  /**
+   * Headless mode only. When the server serves a `fido-registration`
+   * required-action step (`REQUIRED_ACTION_CONFIGURE_PASSWORDLESS` queued on
+   * the user) and the runtime has no WebAuthn capability — no
+   * `PlatformAdapters.webauthn` adapter wired, or one that reports
+   * `isSupported() === false` (the common case for a native/headless
+   * runtime with no passkey adapter yet) — the flow otherwise stalls
+   * forever: nothing advances past this step without a UI calling
+   * `registerPasskey()`, which itself requires WebAuthn. Default: `true` —
+   * the SDK auto-submits `{user_action: "skip"}`
+   * (jummon-auth-engine's `fido_registration_step.go`'s `FidoSkipAction`) on
+   * the caller's behalf, which is a "do it later" defer (the required action
+   * stays queued for next login), never a deny/opt-out. A runtime that DOES
+   * support WebAuthn is unaffected either way — this only ever fires when
+   * `hasWebAuthnCapability()` is false. Set to `false` if your app wants to
+   * handle this step itself (it then surfaces as `needs_required_action`
+   * with `stepRef === "fido-registration"`, same as before this option
+   * existed).
+   */
+  skipUnsupportedFidoRegistration?: boolean;
 }
 
 /** Result of `JummonAuthClient.registerPasskey()` — the newly-enrolled credential. */

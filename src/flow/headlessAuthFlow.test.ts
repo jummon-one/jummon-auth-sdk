@@ -1009,6 +1009,80 @@ describe("HeadlessAuthFlow", () => {
     });
   });
 
+  // --- headless-robustness: fido-registration on a no-WebAuthn runtime never stalls ---
+
+  describe("auto-skip fido-registration on a no-WebAuthn runtime", () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it("no PlatformWebAuthn capability (default jsdom — no PublicKeyCredential/navigator.credentials): auto-submits {step_ref, user_action: \"skip\"} and advances, never stalling on fido-registration", async () => {
+      transportMock.start.mockResolvedValue(envelope({ current_step: { ref: "fido-registration" } }));
+      transportMock.submit.mockResolvedValueOnce(envelope({ current_step: { ref: "username-password-form" } }));
+      const flow = createHeadlessAuthFlow(OPTIONS, sink);
+
+      const snapshot = await flow.start();
+
+      expect(transportMock.submit).toHaveBeenCalledWith("ft-1", {
+        step_ref: "fido-registration",
+        user_action: "skip",
+      });
+      expect(snapshot.status).toBe("needs_credentials");
+      expect(snapshot.stepRef).toBe("username-password-form");
+    });
+
+    it("auto-skip can advance straight to authenticated (fido-registration was the last pending step)", async () => {
+      transportMock.start.mockResolvedValue(envelope({ current_step: { ref: "fido-registration" } }));
+      transportMock.submit.mockResolvedValueOnce(
+        envelope({ status: "authenticated", current_step: null, code: "auth-code", oidc_state: "s", data: {} }),
+      );
+      vi.mocked(exchangeAuthorizationCode).mockResolvedValue({ access_token: "at", token_type: "Bearer" });
+      const flow = createHeadlessAuthFlow(OPTIONS, sink);
+
+      const snapshot = await flow.start();
+
+      expect(snapshot.status).toBe("authenticated");
+      expect(sink.completeSignIn).toHaveBeenCalledTimes(1);
+    });
+
+    it("a WebAuthn-capable runtime (PublicKeyCredential + navigator.credentials.create present) does NOT auto-skip — the step surfaces as-is for registerPasskey()", async () => {
+      vi.stubGlobal("PublicKeyCredential", function PublicKeyCredential() {});
+      vi.stubGlobal("navigator", { credentials: { create: vi.fn(), get: vi.fn() } });
+      transportMock.start.mockResolvedValue(
+        envelope({ current_step: { ref: "fido-registration" }, data: { fido_registration_options: "b64" } }),
+      );
+      const flow = createHeadlessAuthFlow(OPTIONS, sink);
+
+      const snapshot = await flow.start();
+
+      expect(transportMock.submit).not.toHaveBeenCalled();
+      expect(snapshot.status).toBe("needs_required_action");
+      expect(snapshot.stepRef).toBe("fido-registration");
+    });
+
+    it("skipUnsupportedFidoRegistration: false surfaces fido-registration as-is even with no WebAuthn capability (opt-out)", async () => {
+      transportMock.start.mockResolvedValue(envelope({ current_step: { ref: "fido-registration" } }));
+      const flow = createHeadlessAuthFlow({ ...OPTIONS, skipUnsupportedFidoRegistration: false }, sink);
+
+      const snapshot = await flow.start();
+
+      expect(transportMock.submit).not.toHaveBeenCalled();
+      expect(snapshot.status).toBe("needs_required_action");
+      expect(snapshot.stepRef).toBe("fido-registration");
+    });
+
+    it("bounds auto-skip recursion by MAX_AUTO_ADVANCE_DEPTH rather than looping forever if the server keeps re-serving fido-registration", async () => {
+      transportMock.start.mockResolvedValue(envelope({ current_step: { ref: "fido-registration" } }));
+      transportMock.submit.mockResolvedValue(envelope({ current_step: { ref: "fido-registration" } }));
+      const flow = createHeadlessAuthFlow(OPTIONS, sink);
+
+      const snapshot = await flow.start();
+
+      expect(transportMock.submit).toHaveBeenCalledTimes(5); // MAX_AUTO_ADVANCE_DEPTH
+      expect(snapshot.stepRef).toBe("fido-registration");
+    });
+  });
+
   // --- Prummo resilience #3: flow_expired auto-restarts the flow ------------
 
   it("submit() on an expired flow_token transparently restarts via start() and marks the snapshot restartedAfterExpiry", async () => {

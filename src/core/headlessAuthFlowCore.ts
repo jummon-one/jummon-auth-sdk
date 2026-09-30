@@ -58,6 +58,14 @@ const INTERNAL_STEP_REFS = new Set(["check-session-id", "ip-blocklist", "ip-allo
 /** Mirrors `loginHandler.ts`'s `MAX_AUTO_POST_DEPTH` — a circuit breaker, not an expected depth. */
 const MAX_AUTO_ADVANCE_DEPTH = 5;
 
+/**
+ * jummon-auth-engine's `fido_registration_step.go`'s `FidoSkipAction` —
+ * `SubmitStepData.UserAction`'s wire field is `user_action` (JSON), value
+ * `"skip"`. See `HeadlessAuthFlowCore.autoSkipUnsupportedFidoRegistration`'s
+ * doc comment for what this defers vs. denies.
+ */
+const FIDO_SKIP_USER_ACTION = "skip";
+
 export interface HeadlessFlowSnapshot {
   status: HeadlessFlowState | "idle" | "loading";
   flowToken: string | null;
@@ -266,6 +274,8 @@ export class HeadlessAuthFlowCore implements HeadlessAuthFlow {
   private readonly scopes: string[];
   private readonly autoAdvanceInternalSteps: boolean;
   private readonly autoRestartOnExpiry: boolean;
+  /** #headless-fido-stall — see `skipUnsupportedFidoRegistration`'s doc comment on `JummonAuthOptions`. */
+  private readonly skipUnsupportedFidoRegistration: boolean;
   /** #85 risk-signal-collector opt-in — default OFF. See `buildRiskSignals()`'s doc comment. */
   private readonly collectRiskSignals: boolean;
   private readonly listeners = new Set<(snapshot: HeadlessFlowSnapshot) => void>();
@@ -328,6 +338,7 @@ export class HeadlessAuthFlowCore implements HeadlessAuthFlow {
     this.scopes = options.scopes ?? DEFAULT_SCOPES;
     this.autoAdvanceInternalSteps = options.autoAdvanceInternalSteps ?? true;
     this.autoRestartOnExpiry = options.autoRestartOnExpiry ?? true;
+    this.skipUnsupportedFidoRegistration = options.skipUnsupportedFidoRegistration ?? true;
     this.collectRiskSignals = options.collectRiskSignals ?? false;
     this.transport = new HeadlessTransport({
       tenant: this.tenant,
@@ -750,8 +761,67 @@ export class HeadlessAuthFlowCore implements HeadlessAuthFlow {
     return current;
   }
 
-  private async applyEnvelope(rawEnvelope: HeadlessAuthEnvelope): Promise<HeadlessFlowSnapshot> {
-    const envelope = await this.advancePastInternalSteps(rawEnvelope);
+  /**
+   * `PlatformWebAuthn.isSupported()` off the injected adapter — "can this
+   * runtime even attempt a ceremony", the same predicate `requireWebAuthn()`
+   * throws on. A native/headless runtime that never wired a
+   * `PlatformWebAuthn` adapter (`PlatformAdapters.webauthn` is optional) is
+   * `false` here, same as a web adapter reporting no secure-context/API
+   * support.
+   */
+  private hasWebAuthnCapability(): boolean {
+    return this.adapters.webauthn?.isSupported() === true;
+  }
+
+  /**
+   * A `fido-registration` step (`REQUIRED_ACTION_CONFIGURE_PASSWORDLESS`
+   * queued on the user) served to a runtime with no WebAuthn capability
+   * (`!hasWebAuthnCapability()`) previously STALLED the headless flow
+   * forever: nothing in this class advances past it without a UI calling
+   * `registerPasskey()`, which itself hard-requires `adapters.webauthn`
+   * (`requireWebAuthn()`). The server's own escape hatch is `{user_action:
+   * "skip"}` — jummon-auth-engine's `fido_registration_step.go:28-29,101-113`
+   * (`FidoSkipAction`, wire field `user_action` per `SubmitStepData.UserAction`,
+   * `json:"user_action"`) — a "do it later", NOT a deny: the required action
+   * stays queued on the user record and the drain re-offers this step next
+   * login; `ServedRequiredActionSteps` keeps THIS AuthRequest from re-serving
+   * it, so a single skip always advances, never loops.
+   *
+   * Default ON (`skipUnsupportedFidoRegistration`) so a native/headless
+   * integrator never has to know this required action exists to avoid a
+   * dead-locked flow. A runtime that DOES support WebAuthn (web/WebView)
+   * never hits this branch — the normal `registerPasskey()` ceremony (or the
+   * app's own choice to skip/cancel) is untouched. Set the option to `false`
+   * to see the step yourself (it surfaces as `needs_required_action` with
+   * `stepRef === "fido-registration"`, same as before this fix).
+   */
+  private shouldAutoSkipFidoRegistration(envelope: HeadlessAuthEnvelope): boolean {
+    return (
+      this.skipUnsupportedFidoRegistration &&
+      envelope.status === "needs_input" &&
+      envelope.current_step?.ref === "fido-registration" &&
+      !this.hasWebAuthnCapability()
+    );
+  }
+
+  private async applyEnvelope(rawEnvelope: HeadlessAuthEnvelope, depth = 0): Promise<HeadlessFlowSnapshot> {
+    const advanced = await this.advancePastInternalSteps(rawEnvelope);
+
+    if (depth < MAX_AUTO_ADVANCE_DEPTH && this.shouldAutoSkipFidoRegistration(advanced)) {
+      const skipped = await this.transport.submit(advanced.flow_token, {
+        step_ref: "fido-registration",
+        user_action: FIDO_SKIP_USER_ACTION,
+      });
+      // The skip's response is a brand-new envelope that can itself be
+      // `authenticated`, `needs_redirect`, another internal step, or (in
+      // principle, though the server contract above says it won't) another
+      // `fido-registration` — run it through the exact same pipeline rather
+      // than duplicating the branching below. `depth` bounds recursion the
+      // same way `MAX_AUTO_ADVANCE_DEPTH` bounds `advancePastInternalSteps`'s
+      // loop — a circuit breaker, not an expected depth.
+      return this.applyEnvelope(skipped, depth + 1);
+    }
+    const envelope = advanced;
 
     if (envelope.status === "authenticated") {
       return this.completeAuthenticated(envelope);
