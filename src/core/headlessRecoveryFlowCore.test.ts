@@ -18,7 +18,11 @@ describe("HeadlessRecoveryFlowCore", () => {
   beforeEach(() => {
     fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
-    core = new HeadlessRecoveryFlowCore({ baseHost: "dynamic.jummon.dev", flowRef: "recover-account-credential-aware" });
+    core = new HeadlessRecoveryFlowCore({
+      baseHost: "dynamic.jummon.dev",
+      flowRef: "recover-account-credential-aware",
+      tenantSlug: "acme",
+    });
   });
 
   afterEach(() => {
@@ -46,6 +50,10 @@ describe("HeadlessRecoveryFlowCore", () => {
     expect(initUrl).toBe("https://dynamic.jummon.dev/dynamic/executionflows");
     const initBody = JSON.parse(initInit.body as string) as Record<string, unknown>;
     expect(initBody.flow_ref).toBe("recover-account-credential-aware");
+    // dynamic-flows resolves the tenant server-side from this EXACT
+    // snake_case key on the init body — the gateway strips client-supplied
+    // tenant headers on this public/pre-auth route.
+    expect(initBody.tenant_slug).toBe("acme");
     // threat model §3.5 R13 — init() mints and sends the PKCE CHALLENGE
     // only, never the verifier.
     expect(initBody.code_challenge).toEqual(expect.any(String));
@@ -312,7 +320,7 @@ describe("HeadlessRecoveryFlowCore", () => {
         getClientExtensionResults: () => ({}),
       });
       const webauthnCore = new HeadlessRecoveryFlowCore(
-        { baseHost: "dynamic.jummon.dev", flowRef: "recover-account-credential-aware" },
+        { baseHost: "dynamic.jummon.dev", flowRef: "recover-account-credential-aware", tenantSlug: "acme" },
         { isSupported: () => true, create, get: vi.fn() },
       );
       // Manually seed the token as if init()/current() had already run —
@@ -355,8 +363,8 @@ describe("HeadlessRecoveryFlowCore", () => {
   // threat model §3.5 R13/R17 — PKCE device-binding
   describe("PKCE device-binding (R13/R17)", () => {
     it("each init() mints a FRESH verifier/challenge pair — never reused across flow instances", async () => {
-      const coreA = new HeadlessRecoveryFlowCore({ baseHost: "dynamic.jummon.dev", flowRef: "recover" });
-      const coreB = new HeadlessRecoveryFlowCore({ baseHost: "dynamic.jummon.dev", flowRef: "recover" });
+      const coreA = new HeadlessRecoveryFlowCore({ baseHost: "dynamic.jummon.dev", flowRef: "recover", tenantSlug: "acme" });
+      const coreB = new HeadlessRecoveryFlowCore({ baseHost: "dynamic.jummon.dev", flowRef: "recover", tenantSlug: "acme" });
 
       fetchMock
         .mockResolvedValueOnce(new Response(JSON.stringify({ token: "t1", current_step: "x" }), { status: 201 }))

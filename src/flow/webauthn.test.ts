@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bytesToBase64Url } from "../internal/base64";
+import { base64ToBytes, bytesToBase64Url } from "../internal/base64";
 import {
   decodeCredentialCreationOptions,
   decodeCredentialRequestOptions,
@@ -100,7 +100,7 @@ describe("encodeAssertionForWire", () => {
 });
 
 describe("encodeAttestationForWire", () => {
-  it("produces the standard WebAuthn-JSON attestation shape", () => {
+  it("returns a base64 STRING (not an object) wrapping the standard WebAuthn-JSON attestation shape — matches the Go `string` fields (catalog-api's RegisterPasskeyFinishRequest.Attestation, auth-engine's SubmitStepData.FidoRegistationResponse, dynamic-flows' step_enroll_passkey.go Attestation) that bind this value; an object here breaks all three at decode time", () => {
     const fakeCredential = {
       id: "cred-id",
       rawId: new Uint8Array([1, 2]).buffer,
@@ -113,8 +113,14 @@ describe("encodeAttestationForWire", () => {
     } as unknown as PublicKeyCredential;
 
     const wire = encodeAttestationForWire(fakeCredential);
-    expect(wire.id).toBe("cred-id");
-    const response = wire.response as Record<string, unknown>;
+
+    expect(typeof wire).toBe("string");
+    // Round-trip exactly like `fido.FinishRegistration`'s
+    // `base64.StdEncoding.DecodeString` does server-side.
+    const decoded = JSON.parse(new TextDecoder().decode(base64ToBytes(wire))) as Record<string, unknown>;
+    expect(decoded.id).toBe("cred-id");
+    expect(decoded.type).toBe("public-key");
+    const response = decoded.response as Record<string, unknown>;
     expect(typeof response.clientDataJSON).toBe("string");
     expect(typeof response.attestationObject).toBe("string");
   });

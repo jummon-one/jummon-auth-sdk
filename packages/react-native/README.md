@@ -124,8 +124,9 @@ adapters:
 
 ```ts
 const flow = client.startRecoveryFlow({
-  baseHost: "dynamic.jummon.dev", // wherever iam-dynamic-flows' execution-flow API is reachable — infra-specific, not defaulted
+  baseHost: "api.jummon.com", // the prod API-gateway host — same host the rest of this SDK's other API calls use ("api.jummon.dev" in dev); not defaulted
   flowRef: "recover-account-credential-aware",
+  tenantSlug: "acme", // REQUIRED — this is a public (pre-auth) route, so the tenant travels in the init body, not a gateway-injected header
 });
 
 let snapshot = await flow.init();
@@ -136,6 +137,16 @@ snapshot = await flow.submit({ email });
 snapshot = await flow.enrollPasskey(snapshot); // only once stepRef === "enroll-passkey-form" — requires `passkey` in createReactNativePlatformAdapters()
 ```
 
+- **`baseHost`/`tenantSlug`/`flowRef` contract.** `init()` POSTs to
+  `https://<baseHost>/dynamic/executionflows`; every subsequent step goes
+  through `https://<baseHost>/dynamic/executionflows/steps`. `baseHost`
+  is the same prod API-gateway host used for the SDK's other API calls
+  (`"api.jummon.com"`, `"api.jummon.dev"` in dev) — `iam-dynamic-flows`
+  sits behind it. `tenantSlug` and `flowRef` are both required: this is a
+  pre-auth/public route, so the gateway has no session/JWT to derive the
+  tenant from and strips any client-supplied tenant header — `dynamic-flows`
+  instead resolves the tenant from `tenant_slug` in the init body, which
+  `tenantSlug` is sent as.
 - **PKCE device-binding (R13/R17).** Every call above is transparently
   bound to a fresh PKCE verifier/challenge pair minted in `init()` and held
   ONLY in memory for this `flow` instance — see

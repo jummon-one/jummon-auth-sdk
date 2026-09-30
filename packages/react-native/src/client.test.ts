@@ -219,7 +219,7 @@ describe("createJummonAuthReactNative", () => {
   describe("startRecoveryFlow()", () => {
     it("returns a HeadlessRecoveryFlowCore wired to this client's own RN crypto adapter (PKCE device-binding, R13)", async () => {
       const client = createJummonAuthReactNative(OPTIONS, baseDeps());
-      const flow = client.startRecoveryFlow({ baseHost: "dynamic.jummon.dev", flowRef: "recover-account-credential-aware" });
+      const flow = client.startRecoveryFlow({ baseHost: "dynamic.jummon.dev", flowRef: "recover-account-credential-aware", tenantSlug: "acme" });
 
       const fetchMock = vi
         .fn()
@@ -248,7 +248,7 @@ describe("createJummonAuthReactNative", () => {
 
     it("enrollPasskey() throws passkey_origin_unsupported (never a browser navigator.credentials call) when no `passkey` adapter was supplied", async () => {
       const client = createJummonAuthReactNative(OPTIONS, baseDeps());
-      const flow = client.startRecoveryFlow({ baseHost: "dynamic.jummon.dev", flowRef: "recover-account-credential-aware" });
+      const flow = client.startRecoveryFlow({ baseHost: "dynamic.jummon.dev", flowRef: "recover-account-credential-aware", tenantSlug: "acme" });
 
       const snapshot = {
         status: "in_progress" as const,

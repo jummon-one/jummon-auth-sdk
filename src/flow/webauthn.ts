@@ -1,4 +1,4 @@
-import { base64ToBytes, base64UrlToBytes, bytesToBase64Url } from "../internal/base64";
+import { base64ToBytes, base64UrlToBytes, bytesToBase64, bytesToBase64Url } from "../internal/base64";
 
 /**
  * WebAuthn options/response wire encoding for `HeadlessAuthFlow`'s passkey
@@ -99,9 +99,33 @@ export function encodeAssertionForWire(credential: PublicKeyCredential): Record<
   };
 }
 
-export function encodeAttestationForWire(credential: PublicKeyCredential): Record<string, unknown> {
+/**
+ * BUG FIX (critical, all-clients-broken): unlike `encodeAssertionForWire`
+ * (fed straight into `fido_login_response`, whose `FidoLoginResponseRaw`
+ * server type captures ANY raw JSON verbatim — object or string, see
+ * `jummon-auth-engine/internal/authentication/authenticationstep/
+ * models/models.go`'s `UnmarshalJSON`), EVERY consumer of an attestation
+ * (registration, never login) binds into a plain Go `string` field —
+ * `catalog-api/internal/catalog/me/dto.RegisterPasskeyFinishRequest.
+ * Attestation`, `jummon-auth-engine/.../models.SubmitStepData.
+ * FidoRegistationResponse`, and `dynamic-flows/.../step_enroll_passkey.go`'s
+ * `Attestation` all declare `string`, and unlike `FidoLoginResponse` never
+ * got the raw-capture fix. Sending the WebAuthn-JSON as an object (this
+ * function's previous `Record<string, unknown>` return) hits Go's
+ * encoding/json "cannot unmarshal object into Go struct field of type
+ * string" failure on every one of those three binds — `registerPasskey()`
+ * (in-login), `enrollPasskey()` (standalone `/me/credentials/passkeys/
+ * finish`), and `runRecoveryPasskeyCeremony()` (account-recovery
+ * `enroll-passkey-form`) were ALL broken. Must return the SAME outer
+ * envelope shape those three Go strings decode with `base64.StdEncoding.
+ * DecodeString` — standard base64 over the JSON-encoded WebAuthn response,
+ * byte-for-byte what `jummon-b2b-ui/src/lib/webauthn.ts`'s
+ * `encodePasskeyAttestation` (verified working against this same backend)
+ * already does.
+ */
+export function encodeAttestationForWire(credential: PublicKeyCredential): string {
   const response = credential.response as AuthenticatorAttestationResponse;
-  return {
+  const wire = {
     id: credential.id,
     rawId: bytesToBase64Url(credential.rawId),
     type: credential.type,
@@ -111,6 +135,7 @@ export function encodeAttestationForWire(credential: PublicKeyCredential): Recor
     },
     clientExtensionResults: credential.getClientExtensionResults(),
   };
+  return bytesToBase64(new TextEncoder().encode(JSON.stringify(wire)));
 }
 
 function decodeOuterEnvelope(base64: string): string {

@@ -98,7 +98,21 @@ describe("enrollPasskey", () => {
     const finishBody = JSON.parse(finishInit.body as string) as Record<string, unknown>;
     expect(finishBody.ceremony_id).toBe("ceremony-1");
     expect(finishBody.name).toBe("My phone");
-    expect(finishBody).toHaveProperty("attestation");
+    // Wire-format regression guard: `attestation` MUST be a base64 STRING —
+    // `RegisterPasskeyFinishRequest.Attestation` (catalog-api's dto.go) is a
+    // plain Go `string`, and sending an object here silently fails the bind
+    // (encoding/json's "cannot unmarshal object into Go struct field"),
+    // never reaching `fido.FinishRegistration`. A bare `toHaveProperty`
+    // check would pass on either shape — assert the type AND decode it back
+    // to the expected WebAuthn-JSON fields, same round-trip
+    // `fido.FinishRegistration`'s `base64.StdEncoding.DecodeString` does.
+    expect(typeof finishBody.attestation).toBe("string");
+    const decodedAttestation = JSON.parse(
+      new TextDecoder().decode(Uint8Array.from(atob(finishBody.attestation as string), (c) => c.charCodeAt(0))),
+    ) as Record<string, unknown>;
+    expect(decodedAttestation.id).toBe("cred-id");
+    expect(decodedAttestation.type).toBe("public-key");
+    expect(decodedAttestation).toHaveProperty("response");
 
     expect(create).toHaveBeenCalledOnce();
   });

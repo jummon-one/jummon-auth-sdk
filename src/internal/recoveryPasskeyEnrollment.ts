@@ -54,7 +54,13 @@ export interface RecoveryPasskeyChallenge {
 
 export interface RecoveryPasskeyAttestationSubmission {
   ceremony_id: string;
-  attestation: Record<string, unknown>;
+  /**
+   * Base64-wrapped WebAuthn-JSON attestation, matching
+   * `dynamic-flows/internal/executionflow/steps/step_enroll_passkey.go`'s
+   * `Attestation string` — NOT the raw object. See
+   * `../flow/webauthn.ts`'s `encodeAttestationForWire` doc comment.
+   */
+  attestation: string;
   name?: string;
 }
 

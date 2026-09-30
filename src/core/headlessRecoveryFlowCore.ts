@@ -31,10 +31,18 @@ const STEPS_PATH = "/dynamic/executionflows/steps";
  * `../internal/recoveryPasskeyEnrollment.ts`'s doc comment.
  *
  * `baseHost` is caller-supplied (not defaulted to a guessed API-gateway
- * path) — confirming the externally-reachable host/path for
- * `iam-dynamic-flows`' execution-flow API is an infra/gateway-routing
- * question this SDK change does not resolve; see this dispatch's own
- * report for the exact open item.
+ * path) — it is the SAME prod API-gateway host the rest of this SDK's
+ * other API calls use (e.g. `"api.jummon.com"`; `"api.jummon.dev"` in
+ * dev — see the root README's `apiHost` entry), reached at
+ * `/dynamic/executionflows` (init) and `/dynamic/executionflows/steps`
+ * (`STEPS_PATH`, every subsequent step). Because the gateway strips
+ * client-supplied tenant headers on public routes (no session/JWT exists
+ * yet at recovery time — the caller isn't authenticated), the tenant
+ * must instead be identified IN the init request body: {@link
+ * HeadlessRecoveryFlowOptions.tenantSlug} is REQUIRED and sent as
+ * `tenant_slug` for `dynamic-flows` to resolve server-side (Change C,
+ * "public headless recovery"). `flowRef` (typically
+ * `"recover-account-credential-aware"`) is also required.
  *
  * NOT built here (design §11's Wave 4, explicitly deferred): resumable
  * flow persistence across app backgrounding (`../core/flowPersistence.ts`
@@ -81,10 +89,23 @@ const STEPS_PATH = "/dynamic/executionflows/steps";
  * and let it be garbage-collected once the flow reaches `"done"`/`"error"`.
  */
 export interface HeadlessRecoveryFlowOptions {
-  /** Host (no scheme, no trailing slash) where `iam-dynamic-flows`' execution-flow API is externally reachable. */
+  /**
+   * Host (no scheme, no trailing slash) where `iam-dynamic-flows`'
+   * execution-flow API is externally reachable — the prod API-gateway
+   * host (e.g. `"api.jummon.com"`), same as the rest of this SDK's other
+   * API calls (root README's `apiHost`); `"api.jummon.dev"` in dev.
+   */
   baseHost: string;
   /** The tenant's recovery flow ref to start (e.g. `"recover-account-credential-aware"`). */
   flowRef: string;
+  /**
+   * The tenant's slug — REQUIRED. Sent as `tenant_slug` in the init POST
+   * body so `dynamic-flows` can resolve the tenant server-side: this is a
+   * public (unauthenticated) route, and the gateway strips client-supplied
+   * tenant headers on public routes, so there is no other channel for the
+   * tenant to travel on this leg.
+   */
+  tenantSlug: string;
   clientId?: string;
   redirectUri?: string;
   referenceUrl?: string;
@@ -184,6 +205,10 @@ export class HeadlessRecoveryFlowCore {
 
     const envelope = await this.request<ExecutionFlowInitEnvelope>("POST", "/dynamic/executionflows", {
       flow_ref: this.opts.flowRef,
+      // Fixed contract key `dynamic-flows` reads to resolve the tenant
+      // server-side on this public route — see the class doc comment's
+      // "baseHost" paragraph. Do NOT rename this key.
+      tenant_slug: this.opts.tenantSlug,
       client_id: this.opts.clientId,
       redirect_uri: this.opts.redirectUri,
       reference_url: this.opts.referenceUrl,

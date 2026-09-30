@@ -56,8 +56,16 @@ describe("runRecoveryPasskeyCeremony", () => {
 
     expect(result.ceremony_id).toBe("ceremony-1");
     expect(result.name).toBe("My phone");
-    expect(result.attestation).toHaveProperty("id", "cred-id");
-    expect(result.attestation).toHaveProperty("response");
+    // Wire-format regression guard: `attestation` MUST be a base64 STRING —
+    // `dynamic-flows/internal/executionflow/steps/step_enroll_passkey.go`'s
+    // `Attestation` is a plain Go `string`; an object here fails the bind
+    // the same way it did for the standalone enrollment ceremony.
+    expect(typeof result.attestation).toBe("string");
+    const decodedAttestation = JSON.parse(
+      new TextDecoder().decode(Uint8Array.from(atob(result.attestation), (c) => c.charCodeAt(0))),
+    ) as Record<string, unknown>;
+    expect(decodedAttestation.id).toBe("cred-id");
+    expect(decodedAttestation).toHaveProperty("response");
     expect(create).toHaveBeenCalledOnce();
     // The Recovery Grant is never on this path — this module has no HTTP
     // transport of its own (design §3.2: the grant never crosses the wire

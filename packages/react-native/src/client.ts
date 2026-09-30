@@ -84,9 +84,11 @@ export interface JummonAuthReactNativeClient {
    * silent fallback to a browser-only WebAuthn implementation that would
    * crash on `navigator`).
    *
-   * `options.baseHost` is still caller-supplied (unresolved
-   * infra/gateway-routing question, `HeadlessRecoveryFlowCore`'s own doc
-   * comment) — this method does not default it.
+   * `options.baseHost` is caller-supplied (the prod API-gateway host,
+   * e.g. `"api.jummon.com"` — same host the rest of this SDK's other API
+   * calls use; see `HeadlessRecoveryFlowCore`'s own doc comment) and
+   * `options.tenantSlug` is REQUIRED — this method does not default
+   * either.
    *
    * Pair with `@jummon/auth-react-native`'s `createRecoveryReturnListener`
    * (`./adapters/navigation.ts`) for the R12 App-Link/Universal-Link-gated
