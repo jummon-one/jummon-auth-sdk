@@ -52,6 +52,7 @@ export function buildJummonUser(
   tenant: string,
   richClaims?: RichClaims | null,
 ): JummonUser {
+  const idp = asOptionalNonEmptyString(richClaims?.idp ?? accessClaims.idp ?? idClaims.idp);
   return {
     sub: String(idClaims.sub ?? ""),
     email: asOptionalString(idClaims.email),
@@ -60,6 +61,8 @@ export function buildJummonUser(
     tenant,
     roles: asStringArray(richClaims?.roles ?? accessClaims.roles ?? idClaims.roles),
     permissions: asStringArray(richClaims?.permissions ?? accessClaims.permissions ?? idClaims.permissions),
+    idp: idp ?? null,
+    federated: idp != null,
     raw: { ...accessClaims, ...idClaims, ...(richClaims ?? {}) },
   };
 }
@@ -96,4 +99,9 @@ function asOptionalString(value: unknown): string | undefined {
 
 function asOptionalBoolean(value: unknown): boolean | undefined {
   return typeof value === "boolean" ? value : undefined;
+}
+
+/** Same precedence contract as `asOptionalString`, but treats "" as absent — an empty `idp` claim means "not federated", same as a missing one. */
+function asOptionalNonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value !== "" ? value : undefined;
 }

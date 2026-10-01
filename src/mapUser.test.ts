@@ -46,6 +46,37 @@ describe("buildJummonUser (sync, unchanged 3-arg public API)", () => {
   });
 });
 
+describe("buildJummonUser — idp/federated (#261)", () => {
+  it("maps a token with an idp claim to idp:<value> and federated:true, preferring richClaims over accessClaims/idClaims", () => {
+    const user = buildJummonUser(
+      { sub: "u1", idp: "from:idtoken" },
+      { idp: "from:accesstoken" },
+      "acme",
+      { idp: "google-workspace" },
+    );
+    expect(user.idp).toBe("google-workspace");
+    expect(user.federated).toBe(true);
+  });
+
+  it("falls back to accessClaims then idClaims for idp when richClaims is absent, same precedence as roles/permissions", () => {
+    const user = buildJummonUser({ sub: "u1", idp: "from:idtoken" }, { idp: "from:accesstoken" }, "acme", null);
+    expect(user.idp).toBe("from:accesstoken");
+    expect(user.federated).toBe(true);
+  });
+
+  it("yields idp:null and federated:false when no claim set carries an idp", () => {
+    const user = buildJummonUser({ sub: "u1" }, {}, "acme", null);
+    expect(user.idp).toBeNull();
+    expect(user.federated).toBe(false);
+  });
+
+  it("treats an empty-string idp claim as absent — not federated", () => {
+    const user = buildJummonUser({ sub: "u1" }, {}, "acme", { idp: "" });
+    expect(user.idp).toBeNull();
+    expect(user.federated).toBe(false);
+  });
+});
+
 describe("buildJummonUserAsync (issue #8 SDK migration — userinfo PRIMARY, JWT fallback)", () => {
   let fetchMock: ReturnType<typeof vi.fn>;
 

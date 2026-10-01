@@ -14,6 +14,14 @@ import { fetchDiscoveryDocument } from "./tokenExchange";
 export interface RichClaims {
   roles?: string[];
   permissions?: string[];
+  /**
+   * Identity provider / federation alias that authenticated this user
+   * (e.g. "google-workspace"), auth-engine's `idp` claim (#261). Present on
+   * a federated/SSO login, absent/empty on a local-credential login. Read
+   * off `RichClaims` the same way `roles`/`permissions` are — see
+   * `mapUser.ts`'s `buildJummonUser`.
+   */
+  idp?: string;
   [key: string]: unknown;
 }
 

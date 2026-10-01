@@ -149,7 +149,7 @@ describe("JummonAuthProvider / useJummonAuth", () => {
   });
 
   it("useJummonUser() reflects the authenticated user once onAuthStateChanged fires", async () => {
-    const user = { sub: "u1", tenant: "acme", roles: [], permissions: [], raw: {} };
+    const user = { sub: "u1", tenant: "acme", roles: [], permissions: [], idp: null, federated: false, raw: {} };
     const client = makeRedirectClient();
     vi.mocked(client.onAuthStateChanged).mockImplementation((cb) => {
       cb({ status: "authenticated", user });

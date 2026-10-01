@@ -249,6 +249,24 @@ export interface JummonUser {
   roles: string[];
   /** Permission strings off the token's `permissions[]` claim, e.g. "catalog:roles:create". */
   permissions: string[];
+  /**
+   * Identity provider that authenticated this user — auth-engine's `idp`
+   * claim (#261), e.g. "google-workspace". Present → SSO/federated login;
+   * `null` when absent/empty → local-credential login. Agnostic across OIDC
+   * providers (Entra/Okta-style `idp` claim) — the SDK never special-cases
+   * a specific provider name. Read straight off the token the same way
+   * `roles`/`permissions` are — no extra API call.
+   */
+  idp: string | null;
+  /**
+   * Convenience boolean: `true` when `idp` is present (non-null/non-empty).
+   * The app should hide local-credential management (change password /
+   * configure OTP / recovery codes) for a federated user — those live on
+   * the external IdP, not Jummon. Does NOT reflect whether the user has a
+   * local password set server-side; see `has_password` on `/catalog/me` for
+   * that (volatile, not a token claim — deliberately not mirrored here).
+   */
+  federated: boolean;
   /** Full decoded claim set (id_token profile merged with access_token claims), escape hatch for anything not modeled above. */
   raw: Record<string, unknown>;
 }
