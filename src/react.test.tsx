@@ -89,7 +89,11 @@ function makeFakeFlow(): HeadlessAuthFlow {
 }
 
 function makeHeadlessClient(flow: HeadlessAuthFlow = makeFakeFlow()): HeadlessJummonAuthClient {
-  return { ...makeRedirectClient(), startAuthFlow: vi.fn().mockReturnValue(flow) };
+  return {
+    ...makeRedirectClient(),
+    startAuthFlow: vi.fn().mockReturnValue(flow),
+    startRecoveryFlow: vi.fn(),
+  };
 }
 
 describe("JummonAuthProvider / useJummonAuth", () => {
