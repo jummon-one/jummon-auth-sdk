@@ -6,6 +6,11 @@ import {
   type HeadlessAuthFlow,
   type HeadlessSessionSink,
 } from "./flow/headlessAuthFlow";
+import {
+  createHeadlessRecoveryFlow,
+  type HeadlessRecoveryFlow,
+  type HeadlessRecoveryStartOptions,
+} from "./flow/headlessRecoveryFlow";
 import { listCredentials, removeCredential, type HeadlessStepUp } from "./internal/credentialsSelfService";
 import { beginOtpEnrollment, confirmOtpEnrollment } from "./internal/otpEnrollment";
 import { DEFAULT_API_HOST, enrollPasskey } from "./internal/passkeyEnrollment";
@@ -202,6 +207,29 @@ export interface JummonAuthClient {
 export interface HeadlessJummonAuthClient extends JummonAuthClient {
   /** Starts a new in-app login flow. See `HeadlessAuthFlow` (`./flow/headlessAuthFlow.ts`). */
   startAuthFlow(): HeadlessAuthFlow;
+  /**
+   * Starts a new in-app account-recovery flow (issue #163/#165) — mirrors
+   * `startAuthFlow()`'s shape: returns a fresh, stateful
+   * `HeadlessRecoveryFlow` (`./flow/headlessRecoveryFlow.ts`) per call,
+   * pre-wired with this client's `tenant`/`clientId`/`redirectUri`/`apiHost`
+   * (same `JummonAuthOptions` `startAuthFlow()` reads, `apiHost` mapped to
+   * `HeadlessRecoveryFlowOptions.baseHost` — NEVER `issuerHost`, see that
+   * option's doc comment). `flowRef` is caller-supplied (e.g.
+   * `"recover-account-credential-aware"`) because a tenant can author more
+   * than one recovery journey.
+   *
+   * Talks to a DIFFERENT backend (`dynamic-flows`' generic execution-flow
+   * API, `baseHost`) than `startAuthFlow()` (`jummon-auth-engine`'s classic
+   * step engine, `issuerHost`) — see `HeadlessRecoveryFlowCore`'s own doc
+   * comment (`./core/headlessRecoveryFlowCore.ts`) for the full
+   * `init`/`current`/`submit`/`redeemRecoveryCode`/`confirmPartial`/
+   * `enrollPasskey` step-driving API this returns. The standalone
+   * `createHeadlessRecoveryFlow` export (package root, `./index.ts`) remains
+   * available for a caller with no `createJummonAuth()` client at all (e.g.
+   * an unauthenticated recovery-link landing page) — this method is purely
+   * additive convenience on top of it, not a replacement.
+   */
+  startRecoveryFlow(flowRef: string, opts?: HeadlessRecoveryStartOptions): HeadlessRecoveryFlow;
 }
 
 export function createJummonAuth(options: JummonAuthOptions & { mode: "headless" }): HeadlessJummonAuthClient;
@@ -219,6 +247,7 @@ export function createJummonAuth(options: JummonAuthOptions): JummonAuthClient |
     return {
       ...buildClient(engine, options),
       startAuthFlow: () => createHeadlessAuthFlow(options, engine),
+      startRecoveryFlow: (flowRef, opts) => startRecoveryFlowViaOptions(options, flowRef, opts),
     };
   }
 
@@ -245,6 +274,34 @@ function buildClient(engine: AuthEngine, options: JummonAuthOptions): JummonAuth
     listCredentials: () => listCredentialsViaEngine(engine, options),
     removeCredential: (credentialId) => removeCredentialViaEngine(engine, options, credentialId),
   };
+}
+
+/**
+ * Builds the `HeadlessRecoveryFlowOptions` `HeadlessRecoveryFlowCore` needs
+ * out of the SAME `JummonAuthOptions` already passed to `createJummonAuth()`
+ * — the DX gap flagged in `SDK-IDENTIFIER-RECOVERY-ANALYSIS.md` §1.5/§2.3
+ * ("a caller must construct `HeadlessRecoveryFlowOptions` from scratch").
+ * `apiHost` → `baseHost` (the API-gateway host — recovery's
+ * `dynamic-flows` transport, NEVER `issuerHost`, same rule
+ * `registerPasskey()`/`setPassword()` etc. already follow above) and
+ * `tenant` → `tenantSlug` are the two field RENAMES; `clientId`/`redirectUri`
+ * pass straight through. `flowRef` has no equivalent in `JummonAuthOptions`
+ * (a tenant can author more than one recovery journey) so it stays a
+ * required argument on `startRecoveryFlow()` itself, not a client option.
+ */
+function startRecoveryFlowViaOptions(
+  options: JummonAuthOptions,
+  flowRef: string,
+  opts?: HeadlessRecoveryStartOptions,
+): HeadlessRecoveryFlow {
+  return createHeadlessRecoveryFlow({
+    baseHost: options.apiHost ?? DEFAULT_API_HOST,
+    flowRef,
+    tenantSlug: options.tenant,
+    clientId: options.clientId,
+    redirectUri: options.redirectUri,
+    referenceUrl: opts?.referenceUrl,
+  });
 }
 
 async function registerPasskeyViaEngine(

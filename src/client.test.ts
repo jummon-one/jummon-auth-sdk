@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("./internal/passkeyEnrollment", () => ({
   DEFAULT_API_HOST: "api.jummon.com",
@@ -289,5 +289,120 @@ describe("JummonAuthClient.removeCredential()", () => {
       "cred-1",
       expect.objectContaining({ apiHost: "api.jummon.com" }),
     );
+  });
+});
+
+// Wiring `HeadlessRecoveryFlowCore` into `createJummonAuth()`
+// (SDK-IDENTIFIER-RECOVERY-ANALYSIS.md §1.5/§2.3's "Wave 4" item) — mirrors
+// `headlessRecoveryFlowCore.test.ts`'s own fetch-mock pattern (NOT a module
+// mock, unlike every suite above) because the point of this suite is
+// verifying `startRecoveryFlow()` derives the real `HeadlessRecoveryFlowCore`
+// wire calls correctly from `JummonAuthOptions`, not just that it delegates.
+describe("HeadlessJummonAuthClient.startRecoveryFlow()", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("is defined on the headless client and is undefined on the redirect-mode surface (no regression)", () => {
+    const redirectAuth = createJummonAuth(OPTIONS);
+    expect((redirectAuth as { startRecoveryFlow?: unknown }).startRecoveryFlow).toBeUndefined();
+
+    const headlessAuth = createJummonAuth({ ...OPTIONS, mode: "headless" });
+    expect(headlessAuth.startRecoveryFlow).toBeInstanceOf(Function);
+  });
+
+  it("derives baseHost/tenantSlug/clientId/redirectUri from JummonAuthOptions and drives a full init()->submit() round trip (mock transport)", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ token: "flow-token-1", current_step: "validate-user-form" }), {
+          status: 201,
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            next_token: "flow-token-2",
+            current_step: { step: { ref: "validate-user-form" } },
+            data: {},
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            next_token: "flow-token-3",
+            current_step: { step: { ref: "how-to-recover-form" } },
+            data: { options: ["email"] },
+          }),
+          { status: 200 },
+        ),
+      );
+
+    const auth = createJummonAuth({ ...OPTIONS, mode: "headless", apiHost: "api.jummon.dev" });
+    const flow = auth.startRecoveryFlow("recover-account-credential-aware");
+
+    const initSnapshot = await flow.init();
+    expect(initSnapshot.status).toBe("in_progress");
+    expect(initSnapshot.stepRef).toBe("validate-user-form");
+
+    // Forwards a free identifier string verbatim — no email-only shape
+    // validation anywhere in the SDK (mirrors `submitPassword`'s own
+    // identifier-agnostic posture, confirmed in the gap analysis §1.3/§2.3).
+    const nextSnapshot = await flow.submit({ user_ref: "person@example.com" });
+    expect(nextSnapshot.stepRef).toBe("how-to-recover-form");
+
+    const [initUrl, initInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(initUrl).toBe("https://api.jummon.dev/dynamic/executionflows");
+    const initBody = JSON.parse(initInit.body as string) as Record<string, unknown>;
+    expect(initBody.flow_ref).toBe("recover-account-credential-aware");
+    expect(initBody.tenant_slug).toBe("acme"); // OPTIONS.tenant, renamed per HeadlessRecoveryFlowOptions
+    expect(initBody.client_id).toBe("acme-app");
+    expect(initBody.redirect_uri).toBe("https://app.acme.com/callback");
+
+    const [submitUrl] = fetchMock.mock.calls[2] as [string];
+    expect(submitUrl).toBe("https://api.jummon.dev/dynamic/executionflows/steps");
+  });
+
+  it("defaults baseHost to api.jummon.com when apiHost is not configured on JummonAuthOptions", async () => {
+    // A fresh Response per call — Response.body can only be read once, and
+    // init() always chains current() right after (see
+    // HeadlessRecoveryFlowCore.init()'s own doc comment), so a single
+    // shared mockResolvedValue() would fail the second read.
+    const fetchMock = vi.fn().mockImplementation(
+      async () =>
+        new Response(JSON.stringify({ token: "flow-token-1", current_step: "validate-user-form" }), {
+          status: 201,
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const auth = createJummonAuth({ ...OPTIONS, mode: "headless" });
+    await auth.startRecoveryFlow("recover-account-credential-aware").init();
+
+    const [initUrl] = fetchMock.mock.calls[0] as [string];
+    expect(initUrl).toBe("https://api.jummon.com/dynamic/executionflows");
+  });
+
+  it("forwards an optional referenceUrl override into HeadlessRecoveryFlowOptions", async () => {
+    // Same fresh-Response-per-call rationale as the test above.
+    const fetchMock = vi.fn().mockImplementation(
+      async () =>
+        new Response(JSON.stringify({ token: "flow-token-1", current_step: "validate-user-form" }), {
+          status: 201,
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const auth = createJummonAuth({ ...OPTIONS, mode: "headless" });
+    await auth
+      .startRecoveryFlow("recover-account-credential-aware", { referenceUrl: "https://app.acme.com/recover" })
+      .init();
+
+    const [, initInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const initBody = JSON.parse(initInit.body as string) as Record<string, unknown>;
+    expect(initBody.reference_url).toBe("https://app.acme.com/recover");
   });
 });
